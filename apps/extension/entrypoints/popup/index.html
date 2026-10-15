@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>EasyResume 只读助手</title>
+  </head>
+  <body>
+    <main>
+      <header>
+        <span class="mark">E</span>
+        <div>
+          <h1>EasyResume</h1>
+          <p>只读职位助手 · 实验版本</p>
+        </div>
+      </header>
+      <p class="notice">由你触发读取当前页。不点击沟通，不读取登录凭据。选择器尚待真实样本验证。</p>
+      <section id="pair">
+        <label>本地工作台地址<input id="base" value="http://127.0.0.1:8765" type="url" /></label
+        ><label>工作台生成的配对码<input id="code" autocomplete="off" /></label
+        ><button id="connect">建立只读连接</button>
+      </section>
+      <section id="connected" hidden>
+        <p id="connection"></p>
+        <button id="read">读取当前职位页</button>
+        <div id="preview"></div>
+        <label>城市（用于采样）<input id="city" placeholder="如：上海" /></label
+        ><label
+          >用工类型<select id="employment">
+            <option value="unknown">未确认</option>
+            <option value="full_time">全职</option>
+            <option value="internship">实习</option>
+            <option value="part_time">兼职</option>
+          </select></label
+        ><label
+          >招聘对象<select id="recruitment">
+            <option value="unknown">未确认</option>
+            <option value="campus">校招</option>
+            <option value="social">社招</option>
+          </select></label
+        ><button id="save" disabled>保存观察到本地</button
+        ><button id="disconnect" class="secondary">断开本机连接</button>
+      </section>
+      <button id="workbench" class="secondary">打开本地工作台核对</button
+      ><button id="sidepanel" class="secondary">在浏览器侧栏打开</button>
+      <p id="status" role="status" aria-live="polite"></p>
+      <footer>未识别平台账号 · 不支持自动发送</footer>
+    </main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

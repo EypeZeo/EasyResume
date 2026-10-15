@@ -1,0 +1,7 @@
+node_modules
+artifacts
+**/.output
+**/.wxt
+**/dist
+pnpm-lock.yaml
+apps/workbench/src/generated
