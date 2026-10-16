@@ -34,6 +34,11 @@ def choose_port(preferred: int) -> int:
 
 def main():
     multiprocessing.freeze_support()
+    # Redirected Windows output otherwise inherits the system ANSI code page.
+    # Keep both startup messages and diagnostics readable on non-Chinese systems.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
     parser = argparse.ArgumentParser(description="EasyResume 本地求职工作台")
     parser.add_argument(
         "--data-dir", type=Path, default=default_data_dir(), help="默认固定用户数据目录；测试可指定隔离目录"

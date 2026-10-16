@@ -28,6 +28,7 @@ with TemporaryDirectory(prefix="easyresume-frozen-") as directory:
         runtime_env.pop("PYTHONHOME", None)
         runtime_env.pop("PYTHONPATH", None)
         runtime_env.pop("VIRTUAL_ENV", None)
+        runtime_env["PYTHONIOENCODING"] = "cp1252"
         process = subprocess.Popen(command, stdout=log, stderr=log, env=runtime_env)
         try:
             deadline = time.monotonic() + 40
