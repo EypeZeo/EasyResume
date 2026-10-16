@@ -13,7 +13,7 @@ base = os.environ.get("EASYRESUME_TEST_URL", "http://127.0.0.1:8765")
 headers = {"Origin": base, "X-EasyResume-Client": "workbench"}
 token = httpx.post(f"{base}/api/v1/session", headers=headers).json()["token"]
 headers["Authorization"] = f"Bearer {token}"
-code = httpx.post(f"{base}/api/v1/pairing", headers=headers).json()["code"]
+pairing = httpx.post(f"{base}/api/v1/pairing", headers=headers).json()
 extension = Path("apps/extension/.output/chrome-mv3").resolve()
 
 with TemporaryDirectory(prefix="easyresume-extension-") as directory, sync_playwright() as p:
@@ -38,10 +38,11 @@ with TemporaryDirectory(prefix="easyresume-extension-") as directory, sync_playw
         extension_id = worker.url.split("/")[2]
         popup = context.new_page()
         popup.goto(f"chrome-extension://{extension_id}/popup.html")
-        popup.get_by_label("本地工作台地址", exact=True).fill(base)
-        popup.get_by_label("工作台生成的配对码", exact=True).fill(code)
-        popup.get_by_role("button", name="建立只读连接", exact=True).click()
-        expect(popup.get_by_role("status")).to_contain_text("已建立", timeout=10000)
+        popup.get_by_label("粘贴工作台的连接信息", exact=True).fill(json.dumps({
+            "base": base, "code": pairing["code"], "expires_at": pairing["expires_at"], "protocol": 1,
+        }))
+        popup.get_by_role("button", name="连接工作台", exact=True).click()
+        expect(popup.locator("#connection")).to_have_text("已连接工作台", timeout=10000)
         synthetic_html = '<!doctype html><html><head><meta charset="utf-8"><title>Synthetic BOSS fixture</title></head><body><h1 class="job-name">合成扩展集成职位</h1><div class="company-name">合成扩展企业</div><span class="salary">12-18K</span><div class="job-sec-text">本科，Python，固定月薪12-18K，周末双休，五险一金。</div><div class="boss-info">合成招聘者，不应收集</div></body></html>'
         context.route(
             "https://www.zhipin.com/**",
@@ -73,6 +74,13 @@ with TemporaryDirectory(prefix="easyresume-extension-") as directory, sync_playw
         assert manifest["side_panel"]["default_path"] == "sidepanel.html"
         state = httpx.get(f"{base}/api/v1/state", headers=headers).json()
         assert any(j["data"]["title"] == "合成扩展集成职位" for j in state["jobs"])
+        connection = popup.evaluate("chrome.runtime.sendMessage({type:'STATUS'})")
+        assert connection["state"] == "connected"
+        revoked = httpx.delete(f"{base}/api/v1/connections/{connection['installation']}", headers=headers)
+        assert revoked.status_code == 200
+        popup.get_by_role("button", name="重新检查连接", exact=True).click()
+        expect(popup.locator("#connection")).to_contain_text("连接已失效", timeout=10000)
+        expect(popup.get_by_role("button", name="连接工作台", exact=True)).to_be_visible()
         print(
             json.dumps(
                 {
@@ -80,6 +88,7 @@ with TemporaryDirectory(prefix="easyresume-extension-") as directory, sync_playw
                     "checks": [
                         "real MV3 load",
                         "popup pairing",
+                        "authenticated connection check and credential revocation",
                         "content script extraction",
                         "background credentials",
                         "local observation API",

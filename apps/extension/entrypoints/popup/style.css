@@ -4,6 +4,7 @@
 body {
   margin: 0;
   width: 360px;
+  max-width: 100%;
   font:
     14px/1.6 'Microsoft YaHei',
     sans-serif;
@@ -47,7 +48,8 @@ label {
   font-size: 12px;
 }
 input,
-select {
+select,
+textarea {
   display: block;
   width: 100%;
   border: 1px solid #ccd5cc;
@@ -56,6 +58,23 @@ select {
   padding: 9px;
   margin-top: 5px;
   color: inherit;
+}
+textarea {
+  min-height: 105px;
+  resize: vertical;
+  font: inherit;
+  overflow-wrap: anywhere;
+}
+summary {
+  cursor: pointer;
+  margin-top: 16px;
+}
+details p {
+  color: #53665a;
+  font-size: 12px;
+}
+#connection {
+  overflow-wrap: anywhere;
 }
 button {
   cursor: pointer;
@@ -88,7 +107,7 @@ button:disabled {
 }
 footer {
   font-size: 11px;
-  color: #748476;
+  color: #53665a;
   border-top: 1px solid #d9dfd3;
   padding-top: 12px;
 }
@@ -103,7 +122,6 @@ footer {
 @media (max-width: 359px) {
   body {
     width: 100%;
-    min-width: 280px;
   }
   main {
     padding: 15px;
