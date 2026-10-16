@@ -72,3 +72,47 @@ def public_job(data: dict) -> dict:
         "密钥与授权",
     ]
     return cleaned
+
+
+def public_profile(data: dict) -> dict:
+    """Explicit backup schema; never copy future nested evidence or personal contact fields."""
+    keys = {
+        "schema_version",
+        "education_completed",
+        "education_current",
+        "graduation_year",
+        "education_form",
+        "experience_years",
+        "skills",
+        "parent_id",
+        "experience_as_of",
+    }
+    cleaned = {k: v for k, v in data.items() if k in keys}
+    cleaned.update(name="恢复的简历", text="", confirmed=False)
+    nested = {
+        "education_records": {
+            "id",
+            "school",
+            "major",
+            "degree",
+            "education_form",
+            "start_date",
+            "end_date",
+            "status",
+            "expected_graduation_date",
+        },
+        "work_records": {"id", "company", "title", "employment_type", "start_date", "end_date", "current"},
+        "skill_records": {"id", "name", "category", "work_record_ids", "usage"},
+    }
+    for kind, fields in nested.items():
+        if kind in data:
+            cleaned[kind] = [
+                {
+                    **{k: redact(v) if isinstance(v, str) else v for k, v in item.items() if k in fields},
+                    "source": "manual",
+                    "snippet": "",
+                    "confirmed": False,
+                }
+                for item in data[kind]
+            ]
+    return cleaned

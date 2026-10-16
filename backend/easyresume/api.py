@@ -1,6 +1,7 @@
 import csv
 import hashlib
 import io
+import json
 import secrets
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -8,19 +9,23 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from easyresume import __version__
+from easyresume.ai import install_ai
 from easyresume.db import database, migrate
 from easyresume.documents import MAX_FILE, extract_document
 from easyresume.engine import ALGORITHM_VERSION, evaluate
 from easyresume.execution import digest, invalidate, recover
 from easyresume.models import Action, Credential, Record, now_iso, uid
 from easyresume.parsing import PARSER_VERSION, parse_job, parse_profile
-from easyresume.privacy import csv_cell, public_job, redact, safe_url
+from easyresume.privacy import csv_cell, public_job, public_profile, redact, safe_url
+from easyresume.resume import normalize_profile
 from easyresume.schemas import (
     BlacklistInput,
     DraftEditInput,
@@ -69,6 +74,7 @@ def create_app(data_dir: Path, *, development=False, static_dir: Path | None = N
         with sessions.begin() as session:
             recover(session)
         yield
+        await app.state.cancel_ai()
         engine.dispose()
 
     app = FastAPI(
@@ -78,6 +84,12 @@ def create_app(data_dir: Path, *, development=False, static_dir: Path | None = N
     app.state.epoch = epoch
     app.state.gui_token = gui_token
     app.state.data_dir = data_dir
+
+    @app.exception_handler(RequestValidationError)
+    async def invalid_request(request: Request, exc: RequestValidationError):
+        # Validation errors must not reflect resume text, file bytes or API credentials.
+        return JSONResponse({"detail": [{"loc": item["loc"], "type": item["type"], "msg": item["msg"]}
+                                        for item in exc.errors()]}, status_code=422)
 
     @app.middleware("http")
     async def boundary(request: Request, call_next):
@@ -96,7 +108,12 @@ def create_app(data_dir: Path, *, development=False, static_dir: Path | None = N
         if development and origin in {"http://127.0.0.1:5173", "http://localhost:5173"}:
             local_origin = True
         extension_origin = bool(origin and origin.startswith("chrome-extension://"))
-        extension_route = request.url.path in {"/api/v1/pair", "/api/v1/observations", "/api/v1/health"}
+        extension_route = request.url.path in {
+            "/api/v1/pair",
+            "/api/v1/observations",
+            "/api/v1/health",
+            "/api/v1/connection",
+        }
         if origin and not local_origin and not (extension_origin and extension_route):
             return JSONResponse({"detail": "请求来源不受信任"}, status_code=403)
         if request.method == "OPTIONS":
@@ -143,6 +160,12 @@ def create_app(data_dir: Path, *, development=False, static_dir: Path | None = N
         if auth["role"] != "workbench":
             raise HTTPException(403, "只读扩展无权执行此操作")
         return auth
+
+    install_ai(app, sessions, workbench)
+
+    @app.get("/api/v1/connection")
+    def connection(auth=Depends(authenticate)):
+        return {"protocol": 1, "installation_id": auth["id"], "instance": epoch, "permissions": ["read"]}
 
     def get_record(session, record_id, kind=None):
         record = session.get(Record, record_id)
@@ -280,7 +303,7 @@ def create_app(data_dir: Path, *, development=False, static_dir: Path | None = N
             ],
             "features": {
                 "sending": False,
-                "cloud_ai": False,
+                "cloud_ai": True,
                 "ocr": False,
                 "company_api": False,
                 "maps": False,
@@ -298,12 +321,58 @@ def create_app(data_dir: Path, *, development=False, static_dir: Path | None = N
 
     @app.post("/api/v1/scratch", dependencies=[Depends(workbench)])
     def scratch_save(body: dict, session: Session = Depends(get_session)):
+        session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+        if "payload" in body:
+            kind, entity = body.get("kind"), body.get("entity_id", "new")
+            if (
+                kind not in {"profile", "strategy", "job"}
+                or not isinstance(entity, str)
+                or len(entity) > 100
+                or not isinstance(body["payload"], dict)
+                or len(json.dumps(body["payload"], ensure_ascii=False)) > 300000
+            ):
+                raise HTTPException(422, "编辑草稿格式不正确")
+            if kind == "profile":
+                if entity != "new":
+                    get_record(session, entity, "profile")
+                if body["payload"].get("parent_id"):
+                    get_record(session, body["payload"]["parent_id"], "profile")
+            record_id = "scratch-" + digest({"kind": kind, "entity": entity})[:48]
+            existing = session.get(Record, record_id)
+            expected = body.get("expected_version")
+            actual = existing.version if existing else 0
+            if expected != actual:
+                raise HTTPException(409, "另一窗口已修改草稿，请恢复最新草稿后继续")
+            data = {
+                "entity_id": entity,
+                "payload": body["payload"],
+                "base_version": body.get("base_version"),
+                "profile_id": entity if kind == "profile" else body["payload"].get("profile_id"),
+            }
+            if existing:
+                changed = session.execute(
+                    update(Record)
+                    .where(Record.id == record_id, Record.version == expected)
+                    .values(data=data, version=expected + 1, updated_at=now_iso())
+                )
+                if changed.rowcount != 1:
+                    raise HTTPException(409, "草稿已变化，请重新读取")
+            else:
+                try:
+                    add(session, "scratch", data, record_id)
+                except IntegrityError as exc:
+                    session.rollback()
+                    raise HTTPException(409, "另一窗口已创建草稿，请重新读取") from exc
+            session.commit()
+            return {**data, "saved": True, "version": actual + 1}
         kind, text = body.get("kind"), body.get("text")
         if kind not in {"job", "profile"} or not isinstance(text, str) or len(text) > 100000:
             raise HTTPException(422, "输入草稿格式不正确")
         record_id = f"scratch-{kind}"
         existing = session.get(Record, record_id)
         data = {"text": text, "profile_id": body.get("profile_id") if kind == "profile" else None}
+        if data["profile_id"]:
+            get_record(session, data["profile_id"], "profile")
         if existing:
             existing.data = data
             existing.updated_at = now_iso()
@@ -313,9 +382,13 @@ def create_app(data_dir: Path, *, development=False, static_dir: Path | None = N
         return {"saved": True}
 
     @app.get("/api/v1/scratch/{kind}", dependencies=[Depends(workbench)])
-    def scratch_read(kind: str, session: Session = Depends(get_session)):
-        if kind not in {"job", "profile"}:
+    def scratch_read(kind: str, entity_id: str | None = None, session: Session = Depends(get_session)):
+        if kind not in {"job", "profile", "strategy"}:
             raise HTTPException(404)
+        if entity_id is not None:
+            record_id = "scratch-" + digest({"kind": kind, "entity": entity_id})[:48]
+            record = session.get(Record, record_id)
+            return {**record.data, "version": record.version} if record else {"payload": None, "version": 0}
         record = session.get(Record, f"scratch-{kind}")
         return record.data if record else {"text": ""}
 
@@ -330,20 +403,24 @@ def create_app(data_dir: Path, *, development=False, static_dir: Path | None = N
             "profile": parse_profile(result["text"]),
             "format": result["format"],
             "parser_version": PARSER_VERSION,
+            "warnings": result.get("warnings", []),
         }
 
     @app.post("/api/v1/profiles", dependencies=[Depends(workbench)])
     def profile_save(body: Profile, session: Session = Depends(get_session)):
+        session.connection().exec_driver_sql("BEGIN IMMEDIATE")
         if body.parent_id:
             get_record(session, body.parent_id, "profile")
-        record = add(session, "profile", body.model_dump())
+        record = add(session, "profile", normalize_profile(body).model_dump())
         invalidate(session, "画像已更新，请重新生成草稿")
         session.commit()
         return serialized(record)
 
     @app.delete("/api/v1/profiles/{record_id}", dependencies=[Depends(workbench)])
-    def profile_delete(record_id: str, session: Session = Depends(get_session)):
+    async def profile_delete(record_id: str, session: Session = Depends(get_session)):
+        session.connection().exec_driver_sql("BEGIN IMMEDIATE")
         get_record(session, record_id, "profile")
+        await app.state.cancel_ai()
         ids = {record_id}
         profiles = all_kind(session, "profile", True)
         while True:
@@ -357,6 +434,9 @@ def create_app(data_dir: Path, *, development=False, static_dir: Path | None = N
                 strategy.version += 1
         for r in list(session.scalars(select(Record))):
             related = r.data.get("profile_id") in ids
+            if r.kind == "scratch":
+                payload = r.data.get("payload", {})
+                related |= payload.get("parent_id") in ids or payload.get("profile_id") in ids
             if r.kind == "evaluation":
                 related = r.data.get("result", {}).get("snapshot", {}).get("profile_id") in ids
             elif r.kind == "history":
@@ -370,6 +450,7 @@ def create_app(data_dir: Path, *, development=False, static_dir: Path | None = N
 
     @app.post("/api/v1/strategies", dependencies=[Depends(workbench)])
     def strategy_create(body: Strategy, session: Session = Depends(get_session)):
+        session.connection().exec_driver_sql("BEGIN IMMEDIATE")
         if body.profile_id:
             get_record(session, body.profile_id, "profile")
         record = add(session, "strategy", body.model_dump())
@@ -379,6 +460,7 @@ def create_app(data_dir: Path, *, development=False, static_dir: Path | None = N
 
     @app.put("/api/v1/strategies/{record_id}", dependencies=[Depends(workbench)])
     def strategy_change(record_id: str, body: StrategyInput, session: Session = Depends(get_session)):
+        session.connection().exec_driver_sql("BEGIN IMMEDIATE")
         if body.strategy.profile_id:
             get_record(session, body.strategy.profile_id, "profile")
         record = change(
@@ -566,6 +648,7 @@ def create_app(data_dir: Path, *, development=False, static_dir: Path | None = N
 
     @app.post("/api/v1/drafts", dependencies=[Depends(workbench)])
     def draft_create(body: DraftInput, session: Session = Depends(get_session)):
+        session.connection().exec_driver_sql("BEGIN IMMEDIATE")
         job_record = get_record(session, body.job_id, "job")
         strategy_record = get_record(session, body.strategy_id, "strategy")
         profile_id = strategy_record.data.get("profile_id")
@@ -817,11 +900,11 @@ def create_app(data_dir: Path, *, development=False, static_dir: Path | None = N
             if record.kind == "job":
                 data = public_job(data)
             if record.kind == "profile":
-                data.update(name="恢复的简历画像", text="", confirmed=False)
+                data = public_profile(data)
             records.append({"id": record.id, "kind": record.kind, "data": data, "archived": record.archived})
         return {
             "format": "easyresume-backup",
-            "version": 1,
+            "version": 2,
             "created_at": now_iso(),
             "omissions": [
                 "原文和证据片段",
@@ -836,8 +919,9 @@ def create_app(data_dir: Path, *, development=False, static_dir: Path | None = N
 
     def validate_backup(body: dict):
         if (
-            body.get("format") != "easyresume-backup"
-            or body.get("version") != 1
+            not isinstance(body, dict)
+            or body.get("format") != "easyresume-backup"
+            or body.get("version") not in {1, 2}
             or not isinstance(body.get("records"), list)
             or len(body["records"]) > 10000
         ):
@@ -846,16 +930,26 @@ def create_app(data_dir: Path, *, development=False, static_dir: Path | None = N
         ids = set()
         try:
             for item in body["records"]:
-                if not isinstance(item.get("id"), str) or len(item["id"]) > 64 or item["id"] in ids:
+                if (
+                    not isinstance(item, dict)
+                    or not isinstance(item.get("id"), str)
+                    or not item["id"]
+                    or len(item["id"]) > 64
+                    or item["id"] in ids
+                    or item["id"] == "ai-config"
+                    or item["id"].startswith("scratch-")
+                ):
                     raise ValueError("重复或无效ID")
                 ids.add(item["id"])
                 kind, data = item["kind"], item["data"]
+                if not isinstance(data, dict):
+                    raise ValueError("无效记录")
                 if kind == "job":
                     data = {k: v for k, v in public_job(data).items() if k != "privacy_omissions"}
                     data = Job.model_validate(data).model_dump()
                 elif kind == "profile":
                     data = Profile.model_validate(
-                        {**data, "text": "", "confirmed": False, "name": "恢复的简历画像"}
+                        public_profile(Profile.model_validate(data).model_dump())
                     ).model_dump()
                 elif kind == "strategy":
                     data = Strategy.model_validate(data).model_dump()
@@ -871,23 +965,54 @@ def create_app(data_dir: Path, *, development=False, static_dir: Path | None = N
         return validated
 
     @app.post("/api/v1/restore/preview", dependencies=[Depends(workbench)])
-    def restore_preview(body: dict):
+    def restore_preview(body: dict, session: Session = Depends(get_session)):
         validated = validate_backup(body)
+        check_restore_collisions(validated, session)
+        existing = {r.id for r in session.scalars(select(Record))}
         return {
-            "digest": digest(body),
+            "digest": restore_digest(body, session),
             "counts": {
                 k: sum(r["kind"] == k for r in validated) for k in ["profile", "strategy", "job", "blacklist"]
+            },
+            "new_counts": {
+                k: sum(r["kind"] == k and r["id"] not in existing for r in validated)
+                for k in ["profile", "strategy", "job", "blacklist"]
+            },
+            "skipped_counts": {
+                k: sum(r["kind"] == k and r["id"] in existing for r in validated)
+                for k in ["profile", "strategy", "job", "blacklist"]
             },
             "omissions": body.get("omissions", []),
             "warning": "将合并脱敏历史；不覆盖现有记录，不恢复授权，撤销扩展连接。画像、证据需重新确认；已删除的历史资料可能重新出现。",
         }
 
+    def restore_digest(body, session):
+        current = [
+            (r.id, r.kind, r.version, r.updated_at, r.archived)
+            for r in session.scalars(
+                select(Record)
+                .where(Record.kind.in_(["profile", "strategy", "job", "blacklist"]))
+                .order_by(Record.id)
+            )
+        ]
+        return digest({"backup": body, "current": current})
+
+    def check_restore_collisions(records, session):
+        for record in records:
+            existing = session.get(Record, record["id"])
+            if existing and existing.kind != record["kind"]:
+                raise HTTPException(422, "备份记录标识与现有数据冲突，请检查备份来源")
+
     @app.post("/api/v1/restore", dependencies=[Depends(workbench)])
-    def restore(body: dict, session: Session = Depends(get_session)):
+    async def restore(body: dict, session: Session = Depends(get_session)):
+        # Hold the SQLite writer reservation between preview validation and merge.
+        session.connection().exec_driver_sql("BEGIN IMMEDIATE")
         source = body.get("backup", {})
-        if body.get("preview_digest") != digest(source):
+        if body.get("preview_digest") != restore_digest(source, session):
             raise HTTPException(409, "备份已变化，请重新预览")
         records = validate_backup(source)
+        check_restore_collisions(records, session)
+        await app.state.cancel_ai()
         inserted = 0
         for item in records:
             if not session.get(Record, item["id"]):

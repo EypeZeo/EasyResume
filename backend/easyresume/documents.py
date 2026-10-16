@@ -65,7 +65,7 @@ def _memory_limit():
     return job
 
 
-def _extract(data: bytes) -> tuple[str, str]:
+def _extract(data: bytes) -> tuple[str, str, list[dict]]:
     if data.startswith(b"%PDF-"):
         from pypdf import PdfReader
 
@@ -74,17 +74,39 @@ def _extract(data: bytes) -> tuple[str, str]:
             raise ValueError("PDF已加密，请先解密或手动填写")
         if len(reader.pages) > 50:
             raise ValueError("PDF超过50页，请缩减或手动填写")
-        parts = []
-        for page in reader.pages:
-            parts.append(page.extract_text() or "")
+        parts, blocks = [], []
+        for page_number, page in enumerate(reader.pages, 1):
+            page_blocks = []
+
+            def visitor(text, cm, tm, font, size, output=page_blocks, number=page_number):
+                if text.strip():
+                    output.append(
+                        {
+                            "kind": "pdf_text",
+                            "page": number,
+                            "text": text,
+                            "x": round(tm[4], 2),
+                            "y": round(tm[5], 2),
+                        }
+                    )
+
+            if "/Contents" in page:
+                page.extract_text(visitor_text=visitor)
+                page_text = page.extract_text(extraction_mode="layout") or ""
+            else:
+                page_text = ""
+            parts.append(page_text)
+            blocks.extend(page_blocks)
             if sum(len(p) for p in parts) > 100000:
                 raise ValueError("提取文本超过100000字符")
-        text = "\n".join(parts)
+        text = "\n\f\n".join(parts)
         if not text.strip():
             raise ValueError("PDF未提取到文本，可能是扫描件；请上传文本版或手动填写")
-        return text, "pdf"
+        return text, "pdf", blocks
     if data.startswith(b"PK"):
         from docx import Document
+        from docx.table import Table
+        from docx.text.paragraph import Paragraph
 
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             if sum(x.file_size for x in archive.infolist()) > 100 * 1024 * 1024:
@@ -93,13 +115,29 @@ def _extract(data: bytes) -> tuple[str, str]:
             if "word/document.xml" not in names or any("vbaProject" in n for n in names):
                 raise ValueError("仅支持无宏的DOCX文档")
         document = Document(io.BytesIO(data))
-        lines = [p.text for p in document.paragraphs]
-        for table in document.tables:
-            lines.extend(" | ".join(c.text for c in row.cells) for row in table.rows)
+        lines, blocks = [], []
+        seen_cells = set()
+
+        def walk(container, path):
+            for index, item in enumerate(container.iter_inner_content()):
+                location = f"{path}/{index}"
+                if isinstance(item, Paragraph):
+                    lines.append(item.text)
+                    blocks.append({"kind": "paragraph", "location": location, "text": item.text})
+                elif isinstance(item, Table):
+                    for row_index, row in enumerate(item.rows):
+                        for cell_index, cell in enumerate(row.cells):
+                            # lxml element identity catches horizontal and vertical merged cells.
+                            if cell._tc in seen_cells:
+                                continue
+                            seen_cells.add(cell._tc)
+                            walk(cell, f"{location}/row/{row_index}/cell/{cell_index}")
+
+        walk(document, "document")
         text = "\n".join(lines)
         if len(text) > 100000:
             raise ValueError("提取文本超过100000字符")
-        return text, "docx"
+        return text, "docx", blocks
     if data.startswith(b"\xd0\xcf\x11\xe0"):
         raise ValueError("旧版DOC请转换为DOCX或文本PDF")
     if b"\x00" in data[:4096]:
@@ -110,14 +148,21 @@ def _extract(data: bytes) -> tuple[str, str]:
         raise ValueError("文本请保存为UTF-8，或上传DOCX / 文本PDF") from exc
     if not text.strip() or len(text) > 100000:
         raise ValueError("文本为空或超过100000字符")
-    return text, "txt"
+    return text, "txt", [{"kind": "text", "text": text}]
 
 
 def _worker(data: bytes, sender):
     try:
         handle = _memory_limit()
-        text, kind = _extract(data)
-        sender.send({"text": text, "format": kind})
+        text, kind, blocks = _extract(data)
+        sender.send(
+            {
+                "text": text,
+                "format": kind,
+                "blocks": blocks,
+                "warnings": ["PDF版式可能影响阅读顺序，请对照原文检查经历和日期"] if kind == "pdf" else [],
+            }
+        )
         _ = handle
     except Exception as exc:
         sender.send({"error": str(exc)[:250] or "解析失败，请手动填写"})

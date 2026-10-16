@@ -1,44 +1,81 @@
 import re
+import uuid
 from datetime import date
 
 from easyresume.models import now_iso
-from easyresume.schemas import Evidence, Job, Profile
+from easyresume.resume import DEGREE_LEVELS, education_issues
+from easyresume.schemas import EducationRecord, Evidence, Job, Profile, SkillRecord, WorkRecord
 
-PARSER_VERSION = "rules-1.0"
-DEGREES = {"unknown": -1, "none": 0, "高中": 1, "中专": 1, "大专": 2, "本科": 3, "硕士": 4, "博士": 5}
+PARSER_VERSION = "rules-2.0"
+DEGREES = DEGREE_LEVELS
 SKILLS = {
-    "Python": [r"\bpython\b"],
-    "Java": [r"\bjava\b"],
-    "JavaScript": [r"\bjavascript\b", r"\bjs\b"],
-    "TypeScript": [r"\btypescript\b", r"\bts\b"],
-    "React": [r"\breact\b"],
-    "Vue": [r"\bvue\b"],
-    "SQL": [r"\bsql\b", r"\bmysql\b", r"\bpostgresql\b"],
-    "Linux": [r"\blinux\b"],
-    "Docker": [r"\bdocker\b"],
-    "Kubernetes": [r"\bkubernetes\b", r"\bk8s\b"],
-    "Excel": [r"\bexcel\b"],
+    "Python": ["python"],
+    "Java": ["java"],
+    "JavaScript": ["javascript", "js"],
+    "TypeScript": ["typescript", "ts"],
+    "React": ["react"],
+    "Vue": ["vue"],
+    "SQL": ["sql"],
+    "MySQL": ["mysql"],
+    "PostgreSQL": ["postgresql", "postgres"],
+    "SQL Server": [r"sql\s*server"],
+    "Oracle": ["oracle"],
+    "Redis": ["redis"],
+    "Linux": ["linux"],
+    "Windows Server": [r"windows\s*server"],
+    "Active Directory": [r"active\s*directory", "AD域"],
+    "Docker": ["docker"],
+    "Kubernetes": ["kubernetes", "k8s"],
+    "Excel": ["excel"],
+    "PowerShell": ["powershell"],
+    "Bash": ["bash"],
     "C++": [r"c\+\+"],
-    "C#": [r"c#"],
-    "Citrix": [r"\bcitrix\b"],
-    "网络": [r"网络运维", r"网络配置", r"交换机"],
+    "C#": ["c#"],
+    "Citrix": ["citrix"],
+    "VMware": ["vmware"],
+    "Hyper-V": [r"hyper-v"],
+    "Nginx": ["nginx"],
+    "网络运维": ["网络运维", "网络配置"],
+    "交换机": ["交换机"],
+    "路由器": ["路由器"],
+    "防火墙": ["防火墙"],
+    "TCP/IP": [r"tcp\s*/\s*ip"],
+    "VPN": ["vpn"],
+    "DNS": ["dns"],
+    "DHCP": ["dhcp"],
+    "VLAN": ["vlan"],
 }
 
 
-def skills_from(text: str) -> list[str]:
-    found = []
-    for name, patterns in SKILLS.items():
-        for pattern in patterns:
-            matches = list(re.finditer(pattern, text, re.I))
-            if any(
-                not re.search(
-                    r"(?:不要求|无需|不需要|不涉及).{0,6}$", text[max(0, m.start() - 12) : m.start()]
-                )
-                for m in matches
+def _skill_mentions(text: str, name: str):
+    for pattern in SKILLS[name]:
+        for match in re.finditer(r"(?<![A-Za-z0-9_])(?:" + pattern + r")(?![A-Za-z0-9_])", text, re.I):
+            # SQL Server is a concrete product, not two independent skill declarations.
+            if name == "SQL" and re.match(r"\s*server", text[match.end() :], re.I):
+                continue
+            clause = re.split(r"[。；;\n，,]|但是|但|现已", text[: match.start()])[-1][-60:]
+            after = text[match.end() : match.end() + 12]
+            if re.search(
+                r"不要求|无需|不需要|不涉及|不熟悉|未掌握|不会|不了解|没有.{0,6}(?:经验|使用)|尚未", clause
+            ) or re.match(r"\s*(?:不会|不熟悉|未掌握)", after):
+                usage = "negated"
+            elif re.search(r"计划学习|准备学习|希望学习|学习中|正在学习|正在入门|自学中", clause) or re.match(
+                r"\s*(?:学习中|正在学习|计划学习)", after
             ):
-                found.append(name)
-                break
-    return found
+                usage = "learning"
+            elif re.search(r"熟悉|熟练|掌握|使用|维护|部署|运维|配置|开发", clause):
+                usage = "used"
+            else:
+                usage = "mentioned"
+            yield match, usage
+
+
+def skills_from(text: str) -> list[str]:
+    return [
+        name
+        for name in SKILLS
+        if any(usage in {"mentioned", "used"} for _, usage in _skill_mentions(text, name))
+    ]
 
 
 def snippet(text: str, pattern: str) -> str:
@@ -183,33 +220,235 @@ def parse_job(text: str, **meta) -> Job:
     return job
 
 
-def parse_profile(text: str) -> Profile:
-    profile = Profile(text=text, skills=skills_from(text))
-    lines = text.splitlines()
-    completed, current = [], []
-    for line in lines:
-        degree = degree_from(line)
-        if degree == "unknown":
+DATE_TEXT = r"(?:19|20)\d{2}(?:[年./\-]\d{1,2}月?|年)?"
+DATE_RANGE = re.compile(
+    rf"(?P<start>{DATE_TEXT})\s*(?:~|～|—|–|－|-|至|到)\s*(?P<end>{DATE_TEXT}|至今|现在|在职|present|current)",
+    re.I,
+)
+SCHOOL = re.compile(r"[\u4e00-\u9fffA-Za-z·]{2,50}(?:大学|学院|学校)")
+COMPANY = re.compile(r"[\u4e00-\u9fffA-Za-z·（）()]{1,70}(?:有限公司|公司|集团|银行|工作室)")
+HEADINGS = {
+    "教育经历": "education",
+    "教育背景": "education",
+    "学习经历": "education",
+    "工作经历": "work",
+    "工作经验": "work",
+    "任职经历": "work",
+    "实习经历": "internship",
+    "项目经历": "project",
+    "项目经验": "project",
+    "专业技能": "skills",
+    "技能特长": "skills",
+    "个人技能": "skills",
+    "自我评价": "other",
+    "个人简介": "other",
+    "求职意向": "other",
+    "education": "education",
+    "work experience": "work",
+    "experience": "work",
+    "skills": "skills",
+}
+
+
+def _partial_date(text: str) -> str:
+    value = text.strip().removesuffix("年")
+    if re.fullmatch(r"(?:19|20)\d{2}", value):
+        return value
+    try:
+        value = normalized_month(value)
+        return value if re.fullmatch(r"(?:19|20)\d{2}-(?:0[1-9]|1[0-2])", value) else ""
+    except ValueError:
+        return ""
+
+
+def _resume_blocks(text: str):
+    """Section and date boundaries stay together; repeated text is not globally removed."""
+    section, lines = "unknown", []
+    for raw in text.replace(" | ", "\n").splitlines():
+        line = raw.strip()
+        if not line:
             continue
-        if re.search(r"在读|预计|至今|至今.*毕业", line):
-            current.append(degree)
-        else:
-            completed.append(degree)
-    if completed:
-        profile.education_completed = max(completed, key=lambda x: DEGREES[x])
-    if current:
-        profile.education_current = max(current, key=lambda x: DEGREES[x])
-    grad = re.search(r"(?:预计.{0,5}|毕业.{0,3})(20\d{2})|((?:20)\d{2}).{0,5}(?:毕业|届)", text)
-    if grad:
-        profile.graduation_year = int(grad[1] or grad[2])
-    if "非全日制" in text:
-        profile.education_form = "part_time"
-    elif "全日制" in text:
-        profile.education_form = "full_time"
-    exp = re.search(r"(\d+(?:\.\d+)?)\s*年(?:相关)?(?:工作|从业)经验", text)
-    if exp:
-        profile.experience_years = float(exp[1])
-    # Date ranges are deliberately not summed: context/overlap/internships need confirmation.
+        heading = HEADINGS.get(re.sub(r"[\s:：]+$", "", line).lower())
+        if heading:
+            if lines:
+                yield section, "\n".join(lines)
+            section, lines = heading, []
+            continue
+        if DATE_RANGE.search(line) and any(DATE_RANGE.search(previous) for previous in lines):
+            # A school/company name immediately before the next date belongs to the next record.
+            carry = []
+            if (
+                lines
+                and not DATE_RANGE.search(lines[-1])
+                and (SCHOOL.fullmatch(lines[-1]) or COMPANY.fullmatch(lines[-1]))
+            ):
+                carry = [lines.pop()]
+            yield section, "\n".join(lines)
+            lines = carry
+        lines.append(line)
+    if lines:
+        yield section, "\n".join(lines)
+
+
+def _skill_category(name: str) -> str:
+    if name in {"SQL", "MySQL", "PostgreSQL", "SQL Server", "Oracle", "Redis"}:
+        return "数据库"
+    if name in {"Citrix", "VMware", "Hyper-V", "Docker", "Kubernetes"}:
+        return "虚拟化与容器"
+    if name in {"Linux", "Windows Server", "Active Directory", "PowerShell", "Bash"}:
+        return "系统与运维"
+    if name in {"网络运维", "交换机", "路由器", "防火墙", "TCP/IP", "VPN", "DNS", "DHCP", "VLAN"}:
+        return "网络"
+    return "办公" if name == "Excel" else "开发与工具"
+
+
+def parse_profile(text: str) -> Profile:
+    profile = Profile(text=text, schema_version=2, experience_as_of=date.today().strftime("%Y-%m"))
+    for section, block in _resume_blocks(text):
+        dates = DATE_RANGE.search(block)
+        start = _partial_date(dates["start"]) if dates else ""
+        end = _partial_date(dates["end"]) if dates else ""
+        ongoing = bool(dates and not end and re.search(r"至今|现在|在职|present|current", dates["end"], re.I))
+        school = SCHOOL.search(block)
+        company = COMPANY.search(block)
+        explicit_degree = re.search(r"(?:学历|学位)\s*[:：]?\s*(?:本科|大专|专科|硕士|博士|高中|中专)", block)
+        education = section == "education" or (section == "unknown" and (school or explicit_degree))
+        fact = {
+            "id": uuid.uuid4().hex,
+            "source": "resume",
+            "snippet": block[:2000],
+            "parser_version": PARSER_VERSION,
+        }
+        if education:
+            degree = degree_from(block)
+            if not school and degree == "unknown":
+                continue
+            future_end = bool(
+                end
+                and end > profile.experience_as_of[: len(end)]
+                and (not start or start <= profile.experience_as_of[: len(start)])
+            )
+            current = ongoing or future_end or bool(re.search(r"在读|预计.{0,8}毕业", block))
+            status = (
+                "current"
+                if current
+                else "incomplete"
+                if re.search(r"肄业|退学", block)
+                else "completed"
+                if end or re.search(r"已毕业|已取得.{0,6}(?:学历|学位)", block)
+                else "unknown"
+            )
+            expected = re.search(rf"(?:预计毕业(?:时间)?\s*[:：]?\s*|预计\s*)({DATE_TEXT})", block)
+            if not expected:
+                expected = re.search(rf"({DATE_TEXT})\s*(?:预计毕业|毕业|届)", block)
+            if not end and not current and expected and "预计" not in expected[0]:
+                end = _partial_date(expected[1])
+                status = "completed"
+            major = ""
+            for line in block.splitlines():
+                cleaned = DATE_RANGE.sub("", line).strip(" |，,：:")
+                if SCHOOL.search(cleaned) or re.fullmatch(
+                    r"(?:本科|大专|专科|硕士|博士|全日制|非全日制|在读)", cleaned
+                ):
+                    continue
+                if (
+                    re.search(r"专业|计算机|软件|网络|工程|管理|经济|文学|设计|会计|医学|法律", cleaned)
+                    and len(cleaned) < 160
+                ):
+                    major = re.sub(
+                        r"(?:专业[:：]?|[（(](?:本科|大专|专科|硕士|博士)[）)])", "", cleaned
+                    ).strip()
+                    major = re.sub(r"非全日制|全日制|本科|大专|专科|硕士|博士|在读", "", major).strip(
+                        " /，,：:（）()"
+                    )
+                    break
+            record = EducationRecord(
+                **fact,
+                school=school[0] if school else "",
+                major=major,
+                degree=degree,
+                education_form="part_time"
+                if re.search(r"非全日制|函授|自考|成人教育|业余", block)
+                else "full_time"
+                if "全日制" in block
+                else "unknown",
+                start_date=start,
+                end_date="" if current else end,
+                status=status,
+                expected_graduation_date=_partial_date(expected[1]) if expected else end if current else "",
+            )
+            profile.education_records.append(record)
+            profile.review_notes.extend(education_issues(record, profile.experience_as_of))
+            if end and not current:
+                profile.review_notes.append(f"请核对 {record.school or '教育经历'} 的结束时间及毕业状态")
+        elif section in {"work", "internship"} or (section == "unknown" and company and dates):
+            title_match = re.search(
+                r"[\u4e00-\u9fffA-Za-z /]{0,30}(?:工程师|技术员|专员|经理|顾问|助理|开发|运维|实习生)", block
+            )
+            employment = (
+                "internship"
+                if section == "internship" or "实习" in block
+                else "part_time"
+                if "兼职" in block
+                else "full_time"
+                if re.search(r"全职|正式员工|正式工作", block)
+                else "unknown"
+            )
+            title = title_match[0].strip() if title_match else ""
+            if company:
+                title = title.removeprefix(company[0]).strip(" |/，,:：")
+            profile.work_records.append(
+                WorkRecord(
+                    **fact,
+                    company=company[0] if company else "",
+                    title=title,
+                    start_date=start,
+                    end_date=end,
+                    current=ongoing,
+                    employment_type=employment,
+                    responsibilities=block[:5000],
+                )
+            )
+            if employment == "unknown":
+                profile.review_notes.append("请确认工作类型，未确认的经历不会计入工作年限")
+        if len(profile.education_records) >= 30 or len(profile.work_records) >= 100:
+            profile.review_notes.append("经历数量达到上限，请检查并手动整理剩余内容")
+            break
+    for name in SKILLS:
+        mentions = list(_skill_mentions(text, name))
+        if not mentions:
+            continue
+        priority = {"used": 0, "mentioned": 1, "learning": 2, "negated": 3}
+        match, usage = min(mentions, key=lambda item: priority[item[1]])
+        profile.skill_records.append(
+            SkillRecord(
+                id=uuid.uuid4().hex,
+                name=name,
+                category=_skill_category(name),
+                usage=usage,
+                source="resume",
+                snippet=text[max(0, match.start() - 35) : match.end() + 65][:2000],
+                parser_version=PARSER_VERSION,
+                work_record_ids=[r.id for r in profile.work_records if name in skills_from(r.snippet)],
+            )
+        )
+    # These are suggestions for display only; qualification and save normalize confirmed records.
+    profile.skills = skills_from(text)[:40]
+    completed = [r for r in profile.education_records if r.status == "completed"]
+    current = [r for r in profile.education_records if r.status == "current"]
+    highest = max(completed, key=lambda r: DEGREES[r.degree], default=None)
+    ongoing = max(current, key=lambda r: DEGREES[r.degree], default=None)
+    profile.education_completed = highest.degree if highest else "unknown"
+    profile.education_current = ongoing.degree if ongoing else "unknown"
+    selected = ongoing or highest
+    grad = (
+        (selected.expected_graduation_date if selected.status == "current" else selected.end_date)
+        if selected
+        else ""
+    )
+    profile.graduation_year = int(grad[:4]) if grad else None
+    profile.education_form = highest.education_form if highest else "unknown"
+    profile.review_notes = list(dict.fromkeys(profile.review_notes))
     return profile
 
 

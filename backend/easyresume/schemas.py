@@ -21,6 +21,47 @@ class Evidence(StrictModel):
     active: bool = True
 
 
+class ResumeFact(StrictModel):
+    id: str = Field(min_length=1, max_length=100)
+    source: Literal["resume", "manual", "ai"] = "manual"
+    snippet: str = Field(default="", max_length=2000)
+    parser_version: str = Field(default="", max_length=60)
+    confirmed: bool = False
+
+
+PartialDate = str
+
+
+class EducationRecord(ResumeFact):
+    school: str = Field(default="", max_length=160)
+    major: str = Field(default="", max_length=160)
+    degree: Degree = "unknown"
+    education_form: Literal["unknown", "full_time", "part_time"] = "unknown"
+    start_date: PartialDate = Field(default="", pattern=r"^(?:|(?:19|20)\d{2}(?:-(?:0[1-9]|1[0-2]))?)$")
+    end_date: PartialDate = Field(default="", pattern=r"^(?:|(?:19|20)\d{2}(?:-(?:0[1-9]|1[0-2]))?)$")
+    status: Literal["unknown", "completed", "current", "incomplete"] = "unknown"
+    expected_graduation_date: PartialDate = Field(
+        default="", pattern=r"^(?:|(?:19|20)\d{2}(?:-(?:0[1-9]|1[0-2]))?)$"
+    )
+
+
+class WorkRecord(ResumeFact):
+    company: str = Field(default="", max_length=160)
+    title: str = Field(default="", max_length=160)
+    employment_type: Literal["unknown", "full_time", "internship", "part_time"] = "unknown"
+    start_date: PartialDate = Field(default="", pattern=r"^(?:|(?:19|20)\d{2}(?:-(?:0[1-9]|1[0-2]))?)$")
+    end_date: PartialDate = Field(default="", pattern=r"^(?:|(?:19|20)\d{2}(?:-(?:0[1-9]|1[0-2]))?)$")
+    current: bool = False
+    responsibilities: str = Field(default="", max_length=5000)
+
+
+class SkillRecord(ResumeFact):
+    name: str = Field(min_length=1, max_length=100)
+    category: str = Field(default="其他", max_length=60)
+    work_record_ids: list[str] = Field(default_factory=list, max_length=100)
+    usage: Literal["mentioned", "used", "learning", "negated"] = "mentioned"
+
+
 class Profile(StrictModel):
     name: str = Field(default="我的简历", min_length=1, max_length=80)
     text: str = Field(default="", max_length=100000)
@@ -32,6 +73,20 @@ class Profile(StrictModel):
     skills: list[str] = Field(default_factory=list, max_length=40)
     confirmed: bool = False
     parent_id: str | None = None
+    schema_version: Literal[1, 2] = 1
+    education_records: list[EducationRecord] = Field(default_factory=list, max_length=30)
+    work_records: list[WorkRecord] = Field(default_factory=list, max_length=100)
+    skill_records: list[SkillRecord] = Field(default_factory=list, max_length=100)
+    experience_as_of: str = Field(default="", pattern=r"^(?:|(?:19|20)\d{2}-(?:0[1-9]|1[0-2]))$")
+    review_notes: list[str] = Field(default_factory=list, max_length=100)
+
+    @model_validator(mode="after")
+    def unique_record_ids(self):
+        for records in (self.education_records, self.work_records, self.skill_records):
+            ids = [record.id for record in records]
+            if len(ids) != len(set(ids)):
+                raise ValueError("同类经历的标识不能重复")
+        return self
 
 
 class Job(StrictModel):
@@ -93,6 +148,7 @@ class Job(StrictModel):
 class Strategy(StrictModel):
     name: str = Field(default="我的求职策略", min_length=1, max_length=80)
     profile_id: str | None = None
+    relevant_work_ids: list[str] | None = Field(default=None, max_length=100)
     directions: list[str] = Field(default_factory=list, max_length=20)
     skills: list[str] = Field(default_factory=list, max_length=40)
     cities: list[str] = Field(default_factory=list, max_length=20)

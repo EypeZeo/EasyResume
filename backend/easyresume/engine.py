@@ -1,9 +1,10 @@
 from datetime import UTC, datetime, timedelta
 
 from easyresume.parsing import DEGREES
+from easyresume.resume import normalize_profile, qualification_state, summarize_experience
 from easyresume.schemas import Job, Profile, Strategy
 
-ALGORITHM_VERSION = "deterministic-1.0"
+ALGORITHM_VERSION = "deterministic-2.0"
 PRIORITY = {"excluded": 0, "pending": 1, "stretch": 2, "candidate": 3}
 LABELS = {"excluded": "排除", "pending": "待核实", "stretch": "冲刺", "candidate": "候选"}
 FIELD_LABELS = {
@@ -63,7 +64,7 @@ def evaluate(
     if not job.extraction_checked:
         reason("pending", "extraction", "请先核对职位关键字段的提取结果")
     if not profile or not profile.confirmed:
-        reason("pending", "profile", "请确认简历画像并绑定当前策略")
+        reason("pending", "profile", "请确认简历并绑定当前策略")
     if not job.title or not job.company:
         reason("pending", "metadata", "职位名称或公司主体尚未填写")
     if strategy.cities:
@@ -72,7 +73,49 @@ def evaluate(
         elif not any(c.removesuffix("市") == job.city.removesuffix("市") for c in strategy.cities):
             reason("excluded", "city", f"工作城市 {job.city} 不在可接受范围")
 
-    if profile and profile.confirmed:
+    if profile and profile.confirmed and profile.schema_version == 2:
+        profile = normalize_profile(profile)
+        experience = None
+        if strategy.relevant_work_ids is not None:
+            months = summarize_experience(profile, strategy.relevant_work_ids)["months"]
+            experience = months / 12 if months is not None else None
+        exp_ok = (
+            experience is not None and job.experience_min is not None and experience >= job.experience_min
+        )
+        education_needed = (
+            job.education_mode in {"required", "alternative"}
+            or job.graduation_year
+            or job.education_form != "unknown"
+        )
+        education_kind, education_message = (
+            qualification_state(profile, job) if education_needed else ("candidate", "")
+        )
+        if job.education_mode == "complex":
+            reason("pending", "education", "包含放宽或复杂学历条件，请核实具体适用范围")
+        elif job.education_mode == "unknown":
+            reason("pending", "education", "岗位学历要求未明确")
+        elif job.education_mode == "alternative":
+            if education_kind != "candidate" and not exp_ok:
+                if education_kind == "pending" or experience is None or job.experience_min is None:
+                    reason("pending", "education", "学历或所选相关经验尚不足以判断替代条件")
+                else:
+                    reason(
+                        "excluded" if strategy.strict_education else "stretch",
+                        "education",
+                        "学历与所选相关经验均未达到声明要求",
+                    )
+        elif education_kind != "candidate":
+            reason(
+                "excluded" if education_kind == "stretch" and strategy.strict_education else education_kind,
+                "education",
+                education_message,
+            )
+        if job.education_mode != "alternative" and job.experience_min:
+            if experience is None:
+                reason("pending", "experience", "请在当前策略选择相关经历，并核对工作类型及起止月份")
+            elif experience < job.experience_min:
+                reason("stretch", "experience", "所选相关经验低于岗位声明要求")
+    elif profile and profile.confirmed:
         available = DEGREES[profile.education_completed]
         if job.graduation_year and profile.graduation_year == job.graduation_year:
             available = max(available, DEGREES[profile.education_current])
@@ -80,7 +123,7 @@ def evaluate(
             if profile.graduation_year is None:
                 reason("pending", "education", "需要确认毕业年份是否匹配应届要求")
             elif profile.graduation_year != job.graduation_year:
-                reason("stretch", "education", f"岗位要求 {job.graduation_year} 届，画像年份不同")
+                reason("stretch", "education", f"岗位要求 {job.graduation_year} 届，简历年份不同")
         required = DEGREES[job.education]
         exp_ok = (
             profile.experience_years is not None
