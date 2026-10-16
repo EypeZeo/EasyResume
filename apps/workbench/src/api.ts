@@ -1,11 +1,22 @@
 let token = '';
 
+export class HttpError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = 'HttpError';
+  }
+}
+
 export async function connect() {
   const response = await fetch('/api/v1/session', {
     method: 'POST',
     headers: { 'X-EasyResume-Client': 'workbench' },
   });
-  if (!response.ok) throw new Error('无法连接本地服务，请从启动器打开工作台。');
+  if (!response.ok)
+    throw new HttpError('无法连接本地服务，请从启动器打开工作台。', response.status);
   token = (await response.json()).token;
 }
 
@@ -34,7 +45,7 @@ export async function request<T = any>(
     const message = Array.isArray(result.detail)
       ? result.detail.map((e: any) => `${e.loc?.slice(1).join('.')}: ${e.msg}`).join('；')
       : result.detail;
-    throw new Error(message || `请求失败（${response.status}）`);
+    throw new HttpError(message || `请求失败（${response.status}）`, response.status);
   }
   if (response.headers.get('content-type')?.includes('text/csv'))
     return (await response.blob()) as T;

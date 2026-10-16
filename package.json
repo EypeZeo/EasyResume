@@ -1,13 +1,13 @@
 {
   "name": "easyresume-workspace",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0-beta.1",
   "license": "MIT",
   "packageManager": "pnpm@11.7.0",
   "scripts": {
     "build": "pnpm --filter @easyresume/workbench build && pnpm --filter @easyresume/extension build",
     "typecheck": "pnpm --filter @easyresume/workbench typecheck && pnpm --filter @easyresume/extension typecheck",
-    "test": "pnpm --filter @easyresume/extension test",
+    "test": "pnpm --filter @easyresume/extension test && pnpm --filter @easyresume/extension exec vitest run --root ../workbench",
     "dev": "pnpm --filter @easyresume/workbench dev",
     "generate:api": "node scripts/generate-api.mjs"
   },

@@ -39,6 +39,9 @@ import {
 } from 'lucide-react';
 import { download, post, put, request } from './api';
 import type { components } from './generated/api';
+import ResumeEditor from './ResumeEditor';
+import SettingsPage from './SettingsPage';
+import { useEntityDraft } from './useEntityDraft';
 type JobModel = Required<components['schemas']['Job']>;
 
 type Page = 'jobs' | 'profile' | 'strategy' | 'records' | 'settings';
@@ -124,6 +127,7 @@ const salary = (j: any) =>
     ? `${j.salary_min / 1000}–${(j.salary_max ?? j.salary_min) / 1000}K${j.salary_period === 'month' ? '/月' : j.salary_period === 'year' ? '/年' : j.salary_period === 'day' ? '/天' : ''}`
     : '薪资待核实';
 const profileBlank = {
+  schema_version: 2,
   name: '我的简历',
   text: '',
   education_completed: 'unknown',
@@ -134,6 +138,15 @@ const profileBlank = {
   skills: [],
   confirmed: false,
   parent_id: null,
+  education_records: [],
+  work_records: [],
+  skill_records: [],
+  experience_as_of: new Intl.DateTimeFormat('sv-SE', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+  }).format(new Date()),
+  review_notes: [],
 };
 const strategyBlank = {
   name: '我的求职策略',
@@ -460,8 +473,8 @@ export default function App() {
   const [importOpen, setImportOpen] = useState(false);
   const [importText, setImportText] = useState('');
   const [importJob, setImportJob] = useState<any>(null);
-  const [profile, setProfile] = useState<any>({ ...profileBlank });
-  const [strategy, setStrategy] = useState<any>({ ...strategyBlank });
+  const [profileKey, setProfileKey] = useState('new');
+  const [settingsTab, setSettingsTab] = useState('extension');
   const [selected, setSelected] = useState<Row | null>(null);
   const [editingJob, setEditingJob] = useState<any>(null);
   const [draft, setDraft] = useState<Row | null>(null);
@@ -484,6 +497,25 @@ export default function App() {
   const draftQueue = useRef<Promise<unknown>>(Promise.resolve());
   const draftVersions = useRef<Record<string, number>>({});
   const currentStrategy = state.strategies.find((s) => s.id === state.current_strategy_id);
+  const profileDraft = useEntityDraft(
+    'profile',
+    profileKey,
+    profileKey === 'new'
+      ? { ...profileBlank }
+      : { ...state.profiles.find((p) => p.id === profileKey)?.data, parent_id: profileKey },
+  );
+  const profile = profileDraft.value;
+  const setProfile = profileDraft.update;
+  const strategyDraft = useEntityDraft(
+    'strategy',
+    currentStrategy?.id ?? 'new',
+    currentStrategy
+      ? structuredClone(currentStrategy.data)
+      : { ...strategyBlank, profile_id: state.profiles.find((p) => p.data.confirmed)?.id ?? null },
+    currentStrategy?.version,
+  );
+  const strategy = strategyDraft.value;
+  const setStrategy = strategyDraft.update;
 
   async function refresh(id = strategyId) {
     const data = await request<State>(`/state${id ? `?strategy_id=${id}` : ''}`);
@@ -495,7 +527,7 @@ export default function App() {
   }
   useEffect(() => {
     void refresh()
-      .then(() => setStatus('所有内容保存在这台电脑'))
+      .then(() => setStatus('工作台已连接'))
       .catch((e: Error) => {
         setOnline(false);
         setError(e.message);
@@ -516,17 +548,6 @@ export default function App() {
   }
   function navigate(p: Page) {
     setPage(p);
-    if (p === 'strategy')
-      setStrategy(
-        currentStrategy
-          ? structuredClone(currentStrategy.data)
-          : {
-              ...strategyBlank,
-              profile_id: state.profiles.find((p) => p.data.confirmed)?.id ?? null,
-            },
-      );
-    if (p === 'profile' && state.profiles.length && !profile.text)
-      setProfile({ ...state.profiles[0].data, parent_id: state.profiles[0].id });
   }
   function autosaveInput(kind: string, text: string) {
     const timer = kind === 'profile' ? profileTimer : scratchTimer;
@@ -588,7 +609,8 @@ export default function App() {
   async function seedExample() {
     const p = await post<Row>('/profiles', {
       ...profileBlank,
-      name: '示例画像（非真实简历）',
+      schema_version: 1,
+      name: '示例简历（非真实简历）',
       education_completed: '本科',
       experience_years: 2,
       skills: ['Python', 'SQL'],
@@ -624,7 +646,7 @@ export default function App() {
     }
     setStrategyId(s.id);
     await refresh(s.id);
-    setStatus('已导入明确标注的合成示例，可随时修改。示例不计真实平台验证。');
+    setStatus('已导入明确标注的合成示例，可随时修改。');
   }
   const counts = Object.fromEntries(
     ['candidate', 'pending', 'stretch', 'excluded'].map((g) => [
@@ -664,12 +686,10 @@ export default function App() {
           </span>
           <span>
             Easy<span className="brand-light">Resume</span>
-            <small>你的本地求职工作台</small>
+            <small>求职工作台</small>
           </span>
         </button>
-        <div className="workspace-label">
-          个人工作空间 <span>LOCAL</span>
-        </div>
+        <div className="workspace-label">工作空间</div>
         <nav aria-label="主导航">
           {(
             [
@@ -693,22 +713,9 @@ export default function App() {
             </button>
           ))}
         </nav>
-        <div className="sidebar-note">
-          <span className="tiny-label">少一点盲投，多一点确定</span>
-          <p>
-            先看清条件，
-            <br />
-            再迈出下一步。
-          </p>
-          <div className="note-line" />
-          <span>每个判断，都有依据。</span>
-        </div>
         <div className="local-status">
           <span className={`status-dot ${online ? '' : 'offline'}`} />
-          <div>
-            {online ? '本地服务已连接' : '本地服务待连接'}
-            <small>数据留在你的电脑</small>
-          </div>
+          <div>{online ? '本地服务已连接' : '本地服务待连接'}</div>
           <LockKeyhole size={15} />
         </div>
       </aside>
@@ -728,9 +735,7 @@ export default function App() {
             }
           </div>
           <div className="topbar-right">
-            <span className="private-label">
-              <ShieldCheck size={14} /> 本地优先 · 无需账号
-            </span>
+            <span className="private-label"></span>
             <button
               className="avatar"
               aria-label="查看本地设置"
@@ -765,11 +770,8 @@ export default function App() {
             <>
               <section className="page-heading">
                 <div>
-                  <div className="eyebrow">YOUR NEXT CHAPTER</div>
-                  <h1>
-                    把时间留给<span>好机会。</span>
-                  </h1>
-                  <p>从简历出发，找到更合适的岗位。每个判断，都能看见理由。</p>
+                  <h1>岗位工作台</h1>
+                  <p>按当前策略查看岗位，并处理待核实条件。</p>
                 </div>
                 <div className="heading-actions">
                   <button
@@ -1086,11 +1088,6 @@ export default function App() {
                   </div>
                 )}
               </section>
-              <div className="workspace-footer">
-                <LockKeyhole size={13} />
-                你的简历、岗位和策略保存在本机
-                <span>平台发送尚未开放 · 当前以核实与人工操作为主</span>
-              </div>
             </>
           )}
 
@@ -1098,192 +1095,149 @@ export default function App() {
             <>
               <section className="page-heading">
                 <div>
-                  <div className="eyebrow">YOUR EXPERIENCE, CLEARLY</div>
-                  <h1>
-                    从真实的经历<span>出发。</span>
-                  </h1>
-                  <p>解析只是预填。你核对后的学历、技能与经历，才参与筛选。</p>
+                  <h1>我的简历</h1>
+                  <p>导入后检查教育、工作和技能，再保存用于岗位筛选。</p>
                 </div>
+                <button
+                  className="button secondary"
+                  onClick={() =>
+                    void run(async () => {
+                      await profileDraft.flush();
+                      const scratch = await request('/scratch/profile?entity_id=new');
+                      const previous = scratch.payload;
+                      if (
+                        previous &&
+                        !previous.parent_id &&
+                        (previous.text ||
+                          previous.education_records?.length ||
+                          previous.work_records?.length ||
+                          previous.skill_records?.length) &&
+                        !confirm('已有一份未保存为简历的新建草稿。清空它并新建简历？')
+                      )
+                        return;
+                      await profileDraft.reset('new', { ...profileBlank });
+                      setProfileKey('new');
+                    })
+                  }
+                >
+                  新建简历
+                </button>
               </section>
-              <div className="editor-layout">
-                <section className="panel">
-                  <div className="panel-heading">
-                    <h2>01 / 导入简历原文</h2>
-                    <span className="muted">仅在本机解析</span>
-                  </div>
-                  <label className="upload-zone">
-                    <Upload size={25} />
-                    <strong>选择 DOCX、文本 PDF 或 TXT</strong>
-                    <span>最大 20MB · 扫描件可改用手动填写</span>
-                    <input
-                      aria-label="上传简历"
-                      type="file"
-                      accept=".docx,.pdf,.txt"
-                      disabled={busy}
-                      onChange={(e) => {
-                        const f = e.target.files?.[0];
-                        if (f)
-                          void run(async () => {
-                            const form = new FormData();
-                            form.append('file', f);
-                            const result = await request('/profiles/upload', {
-                              method: 'POST',
-                              body: form,
-                            });
-                            setProfile({ ...result.profile, name: f.name.replace(/\.[^.]+$/, '') });
-                          }, '已提取原文，请核对关键字段');
-                      }}
-                    />
-                  </label>
-                  <Field label="简历原文或手动输入">
-                    <textarea
-                      rows={16}
-                      value={profile.text}
-                      onChange={(e) => {
-                        setProfile({ ...profile, text: e.target.value });
-                        autosaveInput('profile', e.target.value);
-                      }}
-                      placeholder="粘贴简历内容，例如教育经历、工作经历与技能…"
-                    />
-                  </Field>
-                  <button
-                    className="button secondary"
-                    disabled={busy || !profile.text.trim()}
-                    onClick={() =>
-                      void run(async () => {
-                        const result = await post('/profiles/parse', { text: profile.text });
-                        setProfile({
-                          ...result.profile,
-                          name: profile.name,
-                          parent_id: profile.parent_id,
+              <ResumeEditor
+                key={profileKey}
+                profile={profile}
+                onChange={setProfile}
+                busy={busy}
+                ready={profileDraft.ready}
+                message={profileDraft.message}
+                onRetry={profileDraft.retry}
+                currentStrategy={currentStrategy}
+                onSettings={() => {
+                  setSettingsTab('help');
+                  setPage('settings');
+                }}
+                onSave={async (value, bind) => {
+                  setBusy(true);
+                  try {
+                    await profileDraft.flush();
+                    const saved = await post<Row>('/profiles', { ...value, confirmed: true });
+                    setProfile({ ...saved.data, parent_id: saved.id });
+                    if (bind && currentStrategy) {
+                      try {
+                        await strategyDraft.flush();
+                        const bound = await put<Row>(`/strategies/${currentStrategy.id}`, {
+                          strategy: {
+                            ...currentStrategy.data,
+                            profile_id: saved.id,
+                            relevant_work_ids: null,
+                          },
+                          expected_version: currentStrategy.version,
                         });
-                      }, '规则预填完成，请检查学历和经历')
-                    }
-                  >
-                    <Sparkles size={15} />
-                    规则预填
-                  </button>
-                  <p className="helper">
-                    工作日期不会盲目累加。重叠经历、实习与相关年限需要人工确认。
-                  </p>
-                </section>
-                <section className="panel">
-                  <div className="panel-heading">
-                    <h2>02 / 集中核对关键事实</h2>
-                    <span className="badge pending">需要你确认</span>
-                  </div>
-                  <form
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      void run(async () => {
-                        const saved = await post<Row>('/profiles', { ...profile, confirmed: true });
-                        setProfile({ ...saved.data, parent_id: saved.id });
+                        await strategyDraft.reset(
+                          currentStrategy.id,
+                          { ...strategy, profile_id: saved.id, relevant_work_ids: null },
+                          bound.version,
+                        );
+                      } catch (e) {
                         await refresh();
-                      }, '画像已确认。请在策略中绑定这个版本。');
-                    }}
-                  >
-                    <div className="form-grid">
-                      <Field label="简历名称">
-                        <input
-                          required
-                          value={profile.name}
-                          onChange={(e) => setProfile({ ...profile, name: e.target.value })}
-                        />
-                      </Field>
-                      <Field label="已完成学历">
-                        <Choice
-                          value={profile.education_completed}
-                          onChange={(v) => setProfile({ ...profile, education_completed: v })}
-                          values={Object.fromEntries(
-                            DEGREE.map((d) => [
-                              d,
-                              d === 'unknown' ? '未知 / 暂不确定' : d === 'none' ? '无此项' : d,
-                            ]),
-                          )}
-                        />
-                      </Field>
-                      <Field label="在读学历">
-                        <Choice
-                          value={profile.education_current}
-                          onChange={(v) => setProfile({ ...profile, education_current: v })}
-                          values={Object.fromEntries(
-                            DEGREE.map((d) => [d, d === 'unknown' ? '没有 / 未明确' : d]),
-                          )}
-                        />
-                      </Field>
-                      <Field label="教育形式">
-                        <Choice
-                          value={profile.education_form}
-                          onChange={(v) => setProfile({ ...profile, education_form: v })}
-                          values={{ unknown: '未明确', full_time: '全日制', part_time: '非全日制' }}
-                        />
-                      </Field>
-                      <NumberField
-                        label="毕业 / 预计毕业年份"
-                        value={profile.graduation_year}
-                        onChange={(v) => setProfile({ ...profile, graduation_year: v })}
-                      />
-                      <NumberField
-                        label="确认的相关工作年限"
-                        value={profile.experience_years}
-                        onChange={(v) => setProfile({ ...profile, experience_years: v })}
-                      />
-                    </div>
-                    <Field label="确认的技能（逗号分隔）">
-                      <ListInput
-                        values={profile.skills}
-                        onChange={(v) => setProfile({ ...profile, skills: v })}
-                      />
-                    </Field>
-                    <div className="info-note">
-                      <ShieldCheck size={17} />
-                      <span>
-                        保存表示你已核对提取。系统不会为你编造经历，也不会上传简历到云端。
-                      </span>
-                    </div>
-                    <button className="button primary" disabled={busy}>
-                      <CheckCheck size={16} />
-                      确认并保存画像版本
-                    </button>
-                  </form>
-                </section>
-              </div>
+                        setProfileKey(saved.id);
+                        throw new Error(
+                          `简历已保存，但当前策略未更新：${e instanceof Error ? e.message : '请在策略页重新选择简历'}`,
+                        );
+                      }
+                    }
+                    await refresh();
+                    setProfileKey(saved.id);
+                    setStatus(
+                      bind ? '简历已保存并绑定策略；策略的其他编辑仍保留为草稿' : '简历已保存',
+                    );
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              />
               <section className="panel mt">
                 <div className="panel-heading">
-                  <h2>已保存的画像</h2>
+                  <h2>已保存的简历</h2>
                   <span>{state.profiles.length} 个版本</span>
                 </div>
-                {state.profiles.length === 0 && (
-                  <p className="muted">还没有保存画像。可以先手动填写右侧表单。</p>
-                )}
+                {!state.profiles.length && <p className="muted">保存后可在这里打开和管理简历。</p>}
                 {state.profiles.map((p) => (
                   <div className="record-row" key={p.id}>
                     <FileText size={18} />
                     <div>
                       <strong>{p.data.name}</strong>
                       <small>
-                        {p.data.education_completed} · {p.data.skills.join(' / ') || '技能未填写'} ·{' '}
+                        {p.data.education_completed === 'unknown'
+                          ? '学历待确认'
+                          : p.data.education_completed}{' '}
+                        · {(p.data.skills ?? []).join(' / ') || '技能待确认'} ·{' '}
                         {dateLabel(p.created_at)}
                       </small>
                     </div>
                     <span className={`badge ${p.data.confirmed ? 'candidate' : 'pending'}`}>
-                      {p.data.confirmed ? '已确认提取' : '需重新确认'}
+                      {p.data.confirmed ? '已保存' : '需重新检查'}
                     </span>
-                    <button
-                      className="text-button"
-                      onClick={() => setProfile({ ...p.data, parent_id: p.id })}
-                    >
+                    <button className="text-button" onClick={() => setProfileKey(p.id)}>
                       载入编辑
                     </button>
                     <button
                       className="text-button danger"
                       onClick={() => {
-                        if (confirm('删除此画像及后续版本、提取原文和衍生草稿？外部备份不受影响。'))
+                        if (
+                          confirm('删除这份简历及后续版本、提取原文和衍生草稿？外部备份不受影响。')
+                        )
                           void run(async () => {
+                            const ids = new Set([p.id]);
+                            let previous = 0;
+                            while (ids.size !== previous) {
+                              previous = ids.size;
+                              for (const item of state.profiles)
+                                if (ids.has(item.data.parent_id)) ids.add(item.id);
+                            }
+                            await profileDraft.flush();
+                            await strategyDraft.flush();
                             await request(`/profiles/${p.id}`, { method: 'DELETE' });
-                            setProfile({ ...profileBlank });
-                            await refresh();
-                          }, '画像及本地衍生内容已删除');
+                            const affected = ids.has(profileKey) || ids.has(profile.parent_id);
+                            profileDraft.forgetLinked(ids);
+                            strategyDraft.forgetLinked(ids);
+                            const fresh = await refresh();
+                            if (ids.has(strategy.profile_id) && currentStrategy) {
+                              const updated = fresh.strategies.find(
+                                (item: Row) => item.id === currentStrategy.id,
+                              );
+                              if (updated)
+                                await strategyDraft.reset(
+                                  currentStrategy.id,
+                                  structuredClone(updated.data),
+                                  updated.version,
+                                );
+                            }
+                            if (affected) {
+                              await profileDraft.reset('new', { ...profileBlank });
+                              setProfileKey('new');
+                            }
+                          }, '简历及本地衍生内容已删除');
                       }}
                     >
                       删除
@@ -1298,10 +1252,7 @@ export default function App() {
             <>
               <section className="page-heading">
                 <div>
-                  <div className="eyebrow">DECIDE WHAT MATTERS</div>
-                  <h1>
-                    底线清楚，<span>选择从容。</span>
-                  </h1>
+                  <h1>筛选策略</h1>
                   <p>先定义你在意的条件，复杂权重可以以后再调。</p>
                 </div>
               </section>
@@ -1310,198 +1261,279 @@ export default function App() {
                 onSubmit={(e: FormEvent) => {
                   e.preventDefault();
                   void run(async () => {
+                    await strategyDraft.flush();
                     let saved: Row;
                     if (currentStrategy)
                       saved = await put(`/strategies/${currentStrategy.id}`, {
                         strategy,
-                        expected_version: currentStrategy.version,
+                        expected_version: strategyDraft.baseVersion,
                       });
                     else saved = await post('/strategies', strategy);
+                    await strategyDraft.reset(saved.id, saved.data, saved.version);
                     setStrategyId(saved.id);
                     await refresh(saved.id);
                   }, '策略已保存，岗位已重新评估');
                 }}
               >
-                <div className="form-grid">
-                  <Field label="策略名称">
-                    <input
-                      required
-                      value={strategy.name}
-                      onChange={(e) => setStrategy({ ...strategy, name: e.target.value })}
-                    />
-                  </Field>
-                  <Field label="绑定简历画像">
-                    <select
-                      value={strategy.profile_id ?? ''}
-                      onChange={(e) =>
-                        setStrategy({ ...strategy, profile_id: e.target.value || null })
-                      }
-                    >
-                      <option value="">先选择已确认画像</option>
-                      {state.profiles.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.data.name} · {p.data.education_completed}
-                          {!p.data.confirmed ? '（需确认）' : ''}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-                  <Field label="岗位方向（逗号分隔）">
-                    <ListInput
-                      values={strategy.directions}
-                      onChange={(v) => setStrategy({ ...strategy, directions: v })}
-                      placeholder="如：数据分析，后端开发"
-                    />
-                  </Field>
-                  <Field label="可接受城市（逗号分隔）">
-                    <ListInput
-                      values={strategy.cities}
-                      onChange={(v) => setStrategy({ ...strategy, cities: v })}
-                      placeholder="留空表示暂不限城市"
-                    />
-                  </Field>
-                  <NumberField
-                    label="最低固定月薪（元）"
-                    value={strategy.salary_floor}
-                    onChange={(v) => setStrategy({ ...strategy, salary_floor: v })}
-                    hint="综合收入不能替代固定底薪"
-                  />
-                  <NumberField
-                    label="理想固定月薪（元）"
-                    value={strategy.salary_ideal}
-                    onChange={(v) => setStrategy({ ...strategy, salary_ideal: v })}
-                  />
-                  <Field label="希望匹配的确认技能">
-                    <ListInput
-                      values={strategy.skills}
-                      onChange={(v) => setStrategy({ ...strategy, skills: v })}
-                    />
-                  </Field>
-                  <Field label="学历不足的处理">
-                    <Choice
-                      value={strategy.strict_education ? 'strict' : 'stretch'}
-                      onChange={(v) =>
-                        setStrategy({ ...strategy, strict_education: v === 'strict' })
-                      }
-                      values={{ stretch: '保留为冲刺岗位（默认）', strict: '严格排除' }}
-                    />
-                  </Field>
-                </div>
-                <div className="section-divider" />
-                <h3>不可接受条件</h3>
-                <div className="toggle-grid">
-                  {(
-                    [
-                      ['require_double', '必须固定双休'],
-                      ['require_social', '必须有五险'],
-                      ['require_fund', '必须有公积金'],
-                      ['reject_dispatch', '不接受劳务派遣'],
-                      ['reject_outsourcing', '不接受业务外包'],
-                      ['salary_hard', '薪资底线为硬要求'],
-                    ] as const
-                  ).map(([key, label]) => (
-                    <Toggle
-                      key={key}
-                      checked={strategy[key]}
-                      onChange={(v) => setStrategy({ ...strategy, [key]: v })}
-                    >
-                      {label}
-                    </Toggle>
-                  ))}
-                </div>
-                <p className="helper">
-                  明确不满足的排除；必要条件未知的待核实。不会把“未提及”判断为“没有”。
-                </p>
-                <details className="advanced">
-                  <summary>
-                    <Settings2 size={16} />
-                    高级设置：权重、企业偏好和证据门槛
-                  </summary>
+                <fieldset className="resume-fieldset" disabled={!strategyDraft.ready || busy}>
                   <div className="form-grid">
-                    {Object.entries({
-                      match: '方向技能',
-                      salary: '固定薪资',
-                      benefits: '制度福利',
-                      ownership: '企业偏好',
-                      activity: 'HR活跃（实验）',
-                    }).map(([key, label]) => (
-                      <NumberField
-                        key={key}
-                        label={`${label}权重`}
-                        value={strategy.weights[key]}
-                        onChange={(v) =>
+                    <Field label="策略名称">
+                      <input
+                        required
+                        value={strategy.name}
+                        onChange={(e) => setStrategy({ ...strategy, name: e.target.value })}
+                      />
+                    </Field>
+                    <Field label="绑定简历版本">
+                      <select
+                        value={strategy.profile_id ?? ''}
+                        onChange={(e) =>
                           setStrategy({
                             ...strategy,
-                            weights: { ...strategy.weights, [key]: v ?? 0 },
+                            profile_id: e.target.value || null,
+                            relevant_work_ids: null,
                           })
                         }
-                      />
-                    ))}
-                    <Field label="首选企业性质">
+                      >
+                        <option value="">先选择已确认简历</option>
+                        {state.profiles.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.data.name} · {p.data.education_completed}
+                            {!p.data.confirmed ? '（需确认）' : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </Field>
+                    <Field label="岗位方向（逗号分隔）">
                       <ListInput
-                        values={strategy.preferred_ownership}
-                        onChange={(v) => setStrategy({ ...strategy, preferred_ownership: v })}
+                        values={strategy.directions}
+                        onChange={(v) => setStrategy({ ...strategy, directions: v })}
+                        placeholder="如：数据分析，后端开发"
                       />
                     </Field>
-                    <Field label="可接受企业性质">
+                    <Field label="可接受城市（逗号分隔）">
                       <ListInput
-                        values={strategy.acceptable_ownership}
-                        onChange={(v) => setStrategy({ ...strategy, acceptable_ownership: v })}
+                        values={strategy.cities}
+                        onChange={(v) => setStrategy({ ...strategy, cities: v })}
+                        placeholder="留空表示暂不限城市"
                       />
                     </Field>
-                    {['rest', 'social', 'fund', 'dispatch', 'outsourcing', 'salary'].map(
-                      (field) => (
-                        <Field
-                          label={`${({ rest: '双休', social: '五险', fund: '公积金', dispatch: '派遣', outsourcing: '外包', salary: '固定薪资' } as any)[field]}依据要求`}
-                          key={field}
-                        >
-                          <Choice
-                            value={strategy.evidence_minimum[field] ?? 'page'}
-                            onChange={(v) =>
-                              setStrategy({
-                                ...strategy,
-                                evidence_minimum: { ...strategy.evidence_minimum, [field]: v },
-                              })
-                            }
-                            values={{
-                              page: '页面明确声明可初筛',
-                              hr: '需要HR回答',
-                              external: '需要外部资料',
-                              self: '需要自行核实',
-                            }}
-                          />
-                        </Field>
-                      ),
-                    )}
+                    <NumberField
+                      label="最低固定月薪（元）"
+                      value={strategy.salary_floor}
+                      onChange={(v) => setStrategy({ ...strategy, salary_floor: v })}
+                      hint="综合收入不能替代固定底薪"
+                    />
+                    <NumberField
+                      label="理想固定月薪（元）"
+                      value={strategy.salary_ideal}
+                      onChange={(v) => setStrategy({ ...strategy, salary_ideal: v })}
+                    />
+                    <Field label="希望匹配的确认技能">
+                      <ListInput
+                        values={strategy.skills}
+                        onChange={(v) => setStrategy({ ...strategy, skills: v })}
+                      />
+                    </Field>
+                    <Field label="学历不足的处理">
+                      <Choice
+                        value={strategy.strict_education ? 'strict' : 'stretch'}
+                        onChange={(v) =>
+                          setStrategy({ ...strategy, strict_education: v === 'strict' })
+                        }
+                        values={{ stretch: '保留为冲刺岗位（默认）', strict: '严格排除' }}
+                      />
+                    </Field>
                   </div>
-                  <p className="helper">
-                    全零表示未评分。未知软条件保留范围；分数不是录用概率。跨策略分数不可直接比较。
+                  <p className="helper" role="status">
+                    {strategyDraft.message}
                   </p>
-                </details>
-                <div className="form-actions">
-                  <button className="button primary" disabled={busy}>
-                    <Check size={16} />
-                    保存并重新评估
-                  </button>
-                  {currentStrategy && (
-                    <button
-                      type="button"
-                      className="button secondary"
-                      onClick={() =>
-                        void run(async () => {
-                          const saved = await post<Row>('/strategies', {
-                            ...strategy,
-                            name: `${strategy.name} · 副本`,
-                          });
-                          setStrategyId(saved.id);
-                          await refresh(saved.id);
-                        }, '已创建独立策略副本')
-                      }
-                    >
-                      另存为新策略
+                  {strategyDraft.message.includes('未保存') && (
+                    <button type="button" className="text-button" onClick={strategyDraft.retry}>
+                      重试保存草稿
                     </button>
                   )}
-                </div>
+                  {!!state.profiles.find((p) => p.id === strategy.profile_id)?.data.work_records
+                    ?.length && (
+                    <section className="resume-section">
+                      <h3>相关工作经历</h3>
+                      <p className="helper">
+                        只计算与这套岗位方向相关且已核对的经历。未选择时保持待确认。
+                      </p>
+                      {state.profiles
+                        .find((p) => p.id === strategy.profile_id)
+                        ?.data.work_records.map((record: any) => (
+                          <label className="check-line" key={record.id}>
+                            <input
+                              type="checkbox"
+                              disabled={!record.confirmed}
+                              checked={(strategy.relevant_work_ids ?? []).includes(record.id)}
+                              onChange={(e) =>
+                                setStrategy({
+                                  ...strategy,
+                                  relevant_work_ids: e.target.checked
+                                    ? [...(strategy.relevant_work_ids ?? []), record.id]
+                                    : (strategy.relevant_work_ids ?? []).filter(
+                                        (id: string) => id !== record.id,
+                                      ),
+                                })
+                              }
+                            />
+                            {record.company || '公司未填写'} · {record.title || '职位未填写'}
+                            {!record.confirmed ? '（请先核对简历）' : ''}
+                          </label>
+                        ))}
+                      <button
+                        type="button"
+                        className="text-button"
+                        onClick={() => setStrategy({ ...strategy, relevant_work_ids: [] })}
+                      >
+                        确认没有相关工作经验
+                      </button>
+                    </section>
+                  )}
+                  <div className="section-divider" />
+                  <h3>不可接受条件</h3>
+                  <div className="toggle-grid">
+                    {(
+                      [
+                        ['require_double', '必须固定双休'],
+                        ['require_social', '必须有五险'],
+                        ['require_fund', '必须有公积金'],
+                        ['reject_dispatch', '不接受劳务派遣'],
+                        ['reject_outsourcing', '不接受业务外包'],
+                        ['salary_hard', '薪资底线为硬要求'],
+                      ] as const
+                    ).map(([key, label]) => (
+                      <Toggle
+                        key={key}
+                        checked={strategy[key]}
+                        onChange={(v) => setStrategy({ ...strategy, [key]: v })}
+                      >
+                        {label}
+                      </Toggle>
+                    ))}
+                  </div>
+                  <p className="helper">
+                    明确不满足的排除；必要条件未知的待核实。不会把“未提及”判断为“没有”。
+                  </p>
+                  <details className="advanced">
+                    <summary>
+                      <Settings2 size={16} />
+                      高级设置：权重、企业偏好和证据门槛
+                    </summary>
+                    <div className="form-grid">
+                      {Object.entries({
+                        match: '方向技能',
+                        salary: '固定薪资',
+                        benefits: '制度福利',
+                        ownership: '企业偏好',
+                        activity: 'HR活跃（实验）',
+                      }).map(([key, label]) => (
+                        <NumberField
+                          key={key}
+                          label={`${label}权重`}
+                          value={strategy.weights[key]}
+                          onChange={(v) =>
+                            setStrategy({
+                              ...strategy,
+                              weights: { ...strategy.weights, [key]: v ?? 0 },
+                            })
+                          }
+                        />
+                      ))}
+                      <Field label="首选企业性质">
+                        <ListInput
+                          values={strategy.preferred_ownership}
+                          onChange={(v) => setStrategy({ ...strategy, preferred_ownership: v })}
+                        />
+                      </Field>
+                      <Field label="可接受企业性质">
+                        <ListInput
+                          values={strategy.acceptable_ownership}
+                          onChange={(v) => setStrategy({ ...strategy, acceptable_ownership: v })}
+                        />
+                      </Field>
+                      {['rest', 'social', 'fund', 'dispatch', 'outsourcing', 'salary'].map(
+                        (field) => (
+                          <Field
+                            label={`${({ rest: '双休', social: '五险', fund: '公积金', dispatch: '派遣', outsourcing: '外包', salary: '固定薪资' } as any)[field]}依据要求`}
+                            key={field}
+                          >
+                            <Choice
+                              value={strategy.evidence_minimum[field] ?? 'page'}
+                              onChange={(v) =>
+                                setStrategy({
+                                  ...strategy,
+                                  evidence_minimum: { ...strategy.evidence_minimum, [field]: v },
+                                })
+                              }
+                              values={{
+                                page: '页面明确声明可初筛',
+                                hr: '需要HR回答',
+                                external: '需要外部资料',
+                                self: '需要自行核实',
+                              }}
+                            />
+                          </Field>
+                        ),
+                      )}
+                    </div>
+                    <p className="helper">
+                      全零表示未评分。未知软条件保留范围；分数不是录用概率。跨策略分数不可直接比较。
+                    </p>
+                  </details>
+                  <div className="form-actions">
+                    <button className="button primary" disabled={busy}>
+                      <Check size={16} />
+                      保存并重新评估
+                    </button>
+                    {currentStrategy && (
+                      <button
+                        type="button"
+                        className="text-button"
+                        onClick={() => {
+                          if (!confirm('放弃当前策略草稿，载入最新保存的版本？')) return;
+                          void run(async () => {
+                            const data = await refresh();
+                            const latest = data.strategies.find(
+                              (item: Row) => item.id === currentStrategy.id,
+                            );
+                            if (latest)
+                              await strategyDraft.reset(
+                                latest.id,
+                                structuredClone(latest.data),
+                                latest.version,
+                                true,
+                              );
+                          });
+                        }}
+                      >
+                        载入最新已保存版本
+                      </button>
+                    )}
+                    {currentStrategy && (
+                      <button
+                        type="button"
+                        className="button secondary"
+                        onClick={() =>
+                          void run(async () => {
+                            await strategyDraft.flush();
+                            const saved = await post<Row>('/strategies', {
+                              ...strategy,
+                              name: `${strategy.name} · 副本`,
+                            });
+                            await strategyDraft.reset(saved.id, saved.data, saved.version);
+                            setStrategyId(saved.id);
+                            await refresh(saved.id);
+                          }, '已创建独立策略副本')
+                        }
+                      >
+                        另存为新策略
+                      </button>
+                    )}
+                  </div>
+                </fieldset>
               </form>
               {state.strategies.length > 0 && (
                 <section className="panel mt">
@@ -1514,7 +1546,6 @@ export default function App() {
                         void run(async () => {
                           setStrategyId(s.id);
                           await refresh(s.id);
-                          setStrategy(structuredClone(s.data));
                         })
                       }
                     >
@@ -1530,18 +1561,13 @@ export default function App() {
             <>
               <section className="page-heading">
                 <div>
-                  <div className="eyebrow">EVERY STEP COUNTS</div>
-                  <h1>
-                    把每一步，<span>记清楚。</span>
-                  </h1>
-                  <p>草稿、人工登记和平台反馈各自标注，点击不等于发送成功。</p>
+                  <h1>沟通与记录</h1>
+                  <p>整理沟通草稿，记录回复、面试和求职进展。</p>
                 </div>
               </section>
               <div className="info-note">
                 <LockKeyhole size={18} />
-                <span>
-                  平台自动发送尚未通过真实验证。这里只保存草稿及人工维护的求职进度，不虚构回复率。
-                </span>
+                <span>在招聘平台完成联系后，在这里登记进度。</span>
               </div>
               <section className="panel mt">
                 <h2>沟通草稿</h2>
@@ -1601,7 +1627,7 @@ export default function App() {
                       onChange={(e) =>
                         void run(
                           () => saveJob(j, { ...j.data, progress: e.target.value }),
-                          '已记录人工维护的进度；不作为平台自动成功反馈',
+                          '进度已保存',
                         )
                       }
                     >
@@ -1664,8 +1690,7 @@ export default function App() {
                       </p>
                       <small>
                         14天观察窗口：已满 {c.window_contacts}，窗口内积极结果 {c.window_positive} /{' '}
-                        {c.window_contacts}；尚未满 {c.awaiting_window}
-                        。仅展示记录，不宣布策略优胜。
+                        {c.window_contacts}；尚未满 {c.awaiting_window}。
                       </small>
                     </div>
                   </div>
@@ -1675,205 +1700,24 @@ export default function App() {
           )}
 
           {page === 'settings' && (
-            <>
-              <section className="page-heading">
-                <div>
-                  <div className="eyebrow">LOCAL BY DESIGN</div>
-                  <h1>
-                    工具为你服务，<span>数据由你掌握。</span>
-                  </h1>
-                  <p>连接范围、数据去向和验证状态，都在这里。</p>
-                </div>
-              </section>
-              <div className="settings-grid">
-                <section className="panel">
-                  <div className="panel-heading">
-                    <h2>
-                      <Link size={18} />
-                      浏览器只读连接
-                    </h2>
-                    <span className="badge pending">实验</span>
-                  </div>
-                  <p>
-                    安装生成的 WXT
-                    扩展，在此生成一次性配对码。仅允许采集当前页面，不授予审批或发送权限。
-                  </p>
-                  <button
-                    className="button primary"
-                    disabled={busy}
-                    onClick={() => void run(async () => setPair(await post('/pairing')))}
-                  >
-                    <Plus size={15} />
-                    生成只读配对码
-                  </button>
-                  {pair && (
-                    <div className="pair-box">
-                      <Field label="本地工作台地址">
-                        <input readOnly value={location.origin} />
-                      </Field>
-                      <Field label="一次性配对码（5分钟有效）">
-                        <input readOnly value={pair.code} onFocus={(e) => e.target.select()} />
-                      </Field>
-                      <small>配对码不要发给他人。当前账号识别未验证。</small>
-                    </div>
-                  )}
-                  {state.connections.map((c) => (
-                    <div className="record-row" key={c.id}>
-                      <div>
-                        <strong>{c.label}</strong>
-                        <small>只读权限 · {dateLabel(c.created_at)}</small>
-                      </div>
-                      <button
-                        className="text-button danger"
-                        onClick={() =>
-                          void run(async () => {
-                            await request(`/connections/${c.id}`, { method: 'DELETE' });
-                            await refresh();
-                          }, '只读连接已撤销')
-                        }
-                      >
-                        撤销
-                      </button>
-                    </div>
-                  ))}
-                </section>
-                <section className="panel">
-                  <h2>数据备份与恢复</h2>
-                  <p>
-                    默认省略原文与证据片段、HR个人信息、聊天、姓名、简历原件和密钥。恢复后需要重新确认，缺失是隐私取舍。
-                  </p>
-                  <button
-                    className="button secondary"
-                    onClick={() =>
-                      void run(async () =>
-                        download(await request('/backup'), 'easyresume-backup.json'),
-                      )
-                    }
-                  >
-                    <ArrowDownToLine size={16} />
-                    下载脱敏备份
-                  </button>
-                  <label className="button secondary file-button">
-                    <Upload size={16} />
-                    预览备份恢复
-                    <input
-                      type="file"
-                      accept=".json"
-                      onChange={(e) => {
-                        const f = e.target.files?.[0];
-                        if (f)
-                          void run(async () => {
-                            if (f.size > 10 * 1024 * 1024) throw new Error('备份超过10MB');
-                            const data = JSON.parse(await f.text());
-                            setPreviewBackup(data);
-                            setBackupPreview(await post('/restore/preview', data));
-                          });
-                      }}
-                    />
-                  </label>
-                </section>
-                <section className="panel">
-                  <h2>职位 / 公司黑名单</h2>
-                  <p className="helper">公司按完整主体名称精确匹配；不会自动扩展到整个集团。</p>
-                  {!state.blacklist.length && (
-                    <p className="muted">暂无黑名单。在岗位详情中添加。</p>
-                  )}
-                  {state.blacklist.map((b) => (
-                    <div className="record-row" key={b.id}>
-                      <div>
-                        <strong>{b.data.target === 'company' ? b.data.value : '指定职位'}</strong>
-                        <small>{b.data.reason}</small>
-                      </div>
-                      <button
-                        className="text-button"
-                        onClick={() =>
-                          void run(async () => {
-                            await request(`/blacklist/${b.id}`, { method: 'DELETE' });
-                            await refresh();
-                          }, '已从黑名单恢复')
-                        }
-                      >
-                        恢复
-                      </button>
-                    </div>
-                  ))}
-                </section>
-                <section className="panel">
-                  <h2>功能与真实验证</h2>
-                  <ul className="feature-list">
-                    <li>
-                      <Check size={15} />
-                      本地规则、模板与SQLite
-                    </li>
-                    <li>
-                      <CircleHelp size={15} />
-                      BOSS读取：实验选择器，待真实采样
-                    </li>
-                    <li>
-                      <LockKeyhole size={15} />
-                      平台发送：未开放
-                    </li>
-                    <li>
-                      <LockKeyhole size={15} />
-                      云端AI、OCR、工商、地图：后置关闭
-                    </li>
-                  </ul>
-                  <p className="helper">
-                    真实60岗位观察、21天复测、用户省时试验与干净Windows验收，均需实际记录证据。
-                  </p>
-                </section>
-              </div>
-              <section className="panel mt">
-                <h2>第0批观察记录</h2>
-                <p>
-                  {state.observations.length}{' '}
-                  条只读观察。重复观察不代表不同职位。该计数不是准确率或稳定性证明。
-                </p>
-                <button
-                  className="button secondary"
-                  onClick={() =>
-                    download(
-                      {
-                        format: 'easyresume-observations',
-                        status: 'unverified',
-                        sending_verified: false,
-                        observations: state.observations.map((o) => ({
-                          ...o.data,
-                          installation_id: undefined,
-                          proposed_job: undefined,
-                        })),
-                      },
-                      'easyresume-observations.json',
-                    )
-                  }
-                >
-                  <ArrowDownToLine size={15} />
-                  导出采样记录
-                </button>
-                {state.observations
-                  .filter((o) => o.data.proposed_job && o.data.job_id)
-                  .map((o) => (
-                    <div className="record-row" key={o.id}>
-                      <div>
-                        <strong>页面出现新版本，等待核对</strong>
-                        <small>{o.data.proposed_job.title} · 旧结论继续保留</small>
-                      </div>
-                      <button
-                        className="button secondary"
-                        onClick={() => {
-                          const job = state.jobs.find((j) => j.id === o.data.job_id);
-                          if (!job) return;
-                          setSelected(job);
-                          setEditingJob(o.data.proposed_job);
-                          setReviewObservation(o.id);
-                        }}
-                      >
-                        核对变更
-                      </button>
-                    </div>
-                  ))}
-              </section>
-            </>
+            <SettingsPage
+              state={state}
+              run={run}
+              refresh={refresh}
+              startTab={settingsTab}
+              onBackup={(backup, preview) => {
+                setPreviewBackup(backup);
+                setBackupPreview(preview);
+              }}
+              onObservation={(observation) => {
+                const job = state.jobs.find((j) => j.id === observation.data.job_id);
+                if (job) {
+                  setSelected(job);
+                  setEditingJob(observation.data.proposed_job);
+                  setReviewObservation(observation.id);
+                }
+              }}
+            />
           )}
         </main>
       </div>
@@ -1886,9 +1730,7 @@ export default function App() {
         >
           {!importJob ? (
             <div className="modal-body">
-              <p className="muted">
-                粘贴职位原文，系统会预填格式明确的要求。无需 AI，也不会自动访问链接。
-              </p>
+              <p className="muted">粘贴职位描述，检查自动识别的要求后保存。</p>
               <Field label="职位描述原文">
                 <textarea
                   rows={12}
@@ -2231,7 +2073,7 @@ export default function App() {
                             });
                             const data = await refresh();
                             setSelected(data.jobs.find((j) => j.id === selected.id) ?? null);
-                          }, '已补充依据。冲突不会被静默覆盖。')
+                          }, '已补充依据，岗位已重新评估')
                         }
                       >
                         保存并重新评估
@@ -2355,18 +2197,53 @@ export default function App() {
       {backupPreview && (
         <Modal title="恢复前检查" onClose={() => setBackupPreview(null)}>
           <div className="modal-body">
-            <p>{backupPreview.warning}</p>
-            <pre className="source-text">{JSON.stringify(backupPreview.counts, null, 2)}</pre>
+            <p>{backupPreview.notice || backupPreview.warning}</p>
+            <table className="restore-table">
+              <thead>
+                <tr>
+                  <th>内容</th>
+                  <th>新增</th>
+                  <th>已存在，跳过</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries({
+                  profile: '简历',
+                  profiles: '简历',
+                  strategy: '策略',
+                  strategies: '策略',
+                  job: '岗位',
+                  jobs: '岗位',
+                  blacklist: '黑名单',
+                })
+                  .filter(([kind]) => Object.hasOwn(backupPreview.counts ?? {}, kind))
+                  .map(([kind, label]) => (
+                    <tr key={kind}>
+                      <td>{label}</td>
+                      <td>{backupPreview.new_counts?.[kind] ?? 0}</td>
+                      <td>{backupPreview.skipped_counts?.[kind] ?? 0}</td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
             <p>已省略：{backupPreview.omissions.join('、')}</p>
             <button
               className="button primary"
               disabled={busy}
               onClick={() =>
                 void run(async () => {
-                  const result = await post('/restore', {
-                    backup: previewBackup,
-                    preview_digest: backupPreview.digest,
-                  });
+                  let result;
+                  try {
+                    result = await post('/restore', {
+                      backup: previewBackup,
+                      preview_digest: backupPreview.digest,
+                    });
+                  } catch (e) {
+                    setBackupPreview(await post('/restore/preview', previewBackup));
+                    throw new Error(
+                      `恢复未执行，已刷新预览，请检查后重试。${e instanceof Error ? e.message : ''}`,
+                    );
+                  }
                   setBackupPreview(null);
                   setPair(null);
                   await refresh();
@@ -2374,7 +2251,7 @@ export default function App() {
                 })
               }
             >
-              确认合并脱敏历史
+              确认恢复
             </button>
           </div>
         </Modal>

@@ -1753,3 +1753,223 @@ h1 > span {
     scroll-behavior: auto !important;
   }
 }
+
+/* Resume review is a continuous form; utility panels stay compact and secondary. */
+.resume-flow {
+  display: grid;
+  gap: 22px;
+  max-width: 1120px;
+}
+.resume-fieldset {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.resume-section {
+  margin-top: 28px;
+  padding-top: 22px;
+  border-top: 1px solid var(--border, #dce4d5);
+}
+.resume-section h3,
+.experience-card h4 {
+  margin: 0;
+}
+.experience-card {
+  border: 1px solid #dce4d5;
+  border-radius: 12px;
+  padding: 22px;
+  margin-top: 14px;
+  background: #fcfdf9;
+  min-width: 0;
+}
+.experience-card .field {
+  margin-bottom: 12px;
+}
+.experience-card .panel-heading {
+  margin-bottom: 14px;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.experience-total {
+  color: #215b4d;
+  font-weight: 600;
+  padding: 12px 0;
+}
+.experience-total small {
+  display: block;
+  font-weight: 400;
+  margin-top: 6px;
+  color: #596650;
+}
+.month-field {
+  max-width: 260px;
+}
+.check-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 12px 0;
+  line-height: 1.6;
+  font-size: 14px;
+}
+.check-line input[type='checkbox'] {
+  width: 17px;
+  height: 17px;
+  margin-top: 3px;
+  flex: 0 0 17px;
+  accent-color: #215b4d;
+}
+.action-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 16px 0;
+}
+.action-row .file-button {
+  margin: 0;
+}
+.action-row > .ai-assist {
+  flex: 1 1 auto;
+}
+.ai-assist .action-row {
+  margin: 0;
+}
+.ai-assist .suggestion-panel {
+  flex-basis: 100%;
+}
+.suggestion-panel {
+  background: #f3f7ee;
+  border: 1px solid #cbd9bf;
+  border-radius: 12px;
+  padding: 20px;
+  margin-top: 18px;
+  width: 100%;
+  min-width: 0;
+}
+.suggestion-section {
+  border-top: 1px solid #d8e3ce;
+  padding: 8px 0;
+}
+.suggestion-section ul,
+.review-notes {
+  padding-left: 22px;
+  overflow-wrap: anywhere;
+}
+.suggestion-section li {
+  margin-bottom: 7px;
+}
+.record-source {
+  margin: 12px 0;
+}
+.record-source summary,
+.settings-content summary {
+  cursor: pointer;
+  color: #2e6354;
+  padding: 8px 0;
+}
+.record-source .source-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.resume-save {
+  margin-top: 28px;
+  padding-top: 20px;
+  border-top: 1px solid #dce4d5;
+}
+.legacy-profile {
+  padding: 16px;
+  border: 1px solid #e3dbc3;
+  border-radius: 10px;
+  margin-top: 18px;
+  background: #fffdf5;
+}
+.settings-tabs {
+  margin-bottom: 22px;
+  justify-content: flex-start;
+}
+.settings-content {
+  max-width: 1040px;
+}
+.settings-content .panel + .panel,
+.ai-settings {
+  margin-top: 22px;
+}
+.setup-steps {
+  padding-left: 22px;
+  line-height: 1.9;
+}
+.setup-steps li {
+  padding-left: 5px;
+  margin-bottom: 12px;
+}
+.backup-actions {
+  gap: 12px;
+  margin-top: 24px;
+}
+.backup-actions .button {
+  min-height: 48px;
+}
+.restore-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 18px 0;
+  text-align: left;
+}
+.restore-table th,
+.restore-table td {
+  padding: 12px 8px;
+  border-bottom: 1px solid #dce4d5;
+}
+.error-inline {
+  color: #9a2d25;
+}
+.sidebar .local-status {
+  margin-top: auto;
+}
+.page-heading {
+  margin-bottom: 26px;
+}
+.page-heading h1 {
+  font-size: clamp(26px, 3vw, 38px);
+}
+.settings-content a {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+@media (max-width: 620px) {
+  .resume-flow {
+    gap: 16px;
+  }
+  .experience-card {
+    padding: 14px;
+  }
+  .resume-import .panel-heading,
+  .resume-review > .panel-heading {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .resume-section > .panel-heading {
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .action-row .button {
+    white-space: normal;
+  }
+  .backup-actions {
+    align-items: stretch;
+  }
+  .backup-actions .button {
+    flex: 1 1 150px;
+  }
+  .settings-tabs {
+    flex-wrap: wrap;
+  }
+  .suggestion-panel {
+    padding: 14px;
+  }
+  .restore-table {
+    font-size: 13px;
+  }
+}

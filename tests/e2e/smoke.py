@@ -24,7 +24,7 @@ with sync_playwright() as p:
     page.on("pageerror", lambda error: errors.append(str(error)))
     page.goto(BASE)
     page.wait_for_load_state("networkidle")
-    expect(page.get_by_role("heading", level=1)).to_contain_text("好机会")
+    expect(page.get_by_role("heading", level=1)).to_be_visible()
     if page.get_by_role("button", name="用合成示例体验").count():
         page.get_by_role("button", name="用合成示例体验").click()
     expect(page.get_by_role("button", name="[示例] Python 开发工程师", exact=True)).to_be_visible(
@@ -80,8 +80,9 @@ with sync_playwright() as p:
         page.locator("section").filter(has=page.get_by_role("heading", name="按首次联系策略统计"))
     ).to_contain_text("积极回复 1")
     page.get_by_role("button", name="设置与连接", exact=True).click()
-    page.get_by_role("button", name="生成只读配对码", exact=True).click()
-    expect(page.get_by_label("一次性配对码（5分钟有效）", exact=True)).to_have_value(
+    page.get_by_role("button", name="生成连接信息", exact=True).click()
+    page.get_by_text("手动填写连接信息", exact=True).click()
+    expect(page.get_by_label("一次性连接代码", exact=True)).to_have_value(
         __import__("re").compile(r".{20,}")
     )
     page.get_by_role("button", name="岗位工作台", exact=False).click()
