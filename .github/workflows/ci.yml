@@ -27,6 +27,11 @@ jobs:
           EASYRESUME_TEST_BROWSER: chromium
           EASYRESUME_TEST_URL: http://127.0.0.1:8771
         run: uv run python "$GITHUB_WORKSPACE/scripts/with_server.py" --server 'uv run easyresume --no-browser --data-dir artifacts/ci-data --port 8771' --port 8771 -- uv run python tests/e2e/smoke.py
+      - name: Resume and settings revision workflow
+        env:
+          EASYRESUME_TEST_BROWSER: chromium
+          EASYRESUME_TEST_URL: http://127.0.0.1:8773
+        run: uv run python "$GITHUB_WORKSPACE/scripts/with_server.py" --server 'uv run easyresume --no-browser --data-dir artifacts/ci-revision-data --port 8773' --port 8773 -- uv run python tests/e2e/revision.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:

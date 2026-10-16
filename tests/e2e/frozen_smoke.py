@@ -2,6 +2,7 @@
 
 import io
 import json
+import os
 import socket
 import subprocess
 import time
@@ -12,7 +13,7 @@ import httpx
 import psutil
 from docx import Document
 
-executable = Path("artifacts/windows/EasyResume/EasyResume.exe").resolve()
+executable = Path(os.environ.get("EASYRESUME_TEST_EXE", "artifacts/windows/v0.2.0-beta.1/EasyResume/EasyResume.exe")).resolve()
 assert executable.is_file(), "Build the Windows test distribution first"
 with TemporaryDirectory(prefix="easyresume-frozen-") as directory:
     root = Path(directory)
@@ -20,7 +21,14 @@ with TemporaryDirectory(prefix="easyresume-frozen-") as directory:
         occupied.bind(("127.0.0.1", 8780))
         occupied.listen()
         command = [str(executable), "--no-browser", "--data-dir", directory, "--port", "8780"]
-        process = subprocess.Popen(command, stdout=log, stderr=log)
+        # The packaged program and its parser must not discover developer Python/Node on PATH.
+        runtime_env = os.environ.copy()
+        windows = Path(os.environ.get("SystemRoot", "C:/Windows"))
+        runtime_env["PATH"] = os.pathsep.join([str(windows / "System32"), str(windows)])
+        runtime_env.pop("PYTHONHOME", None)
+        runtime_env.pop("PYTHONPATH", None)
+        runtime_env.pop("VIRTUAL_ENV", None)
+        process = subprocess.Popen(command, stdout=log, stderr=log, env=runtime_env)
         try:
             deadline = time.monotonic() + 40
             info = None
@@ -38,7 +46,7 @@ with TemporaryDirectory(prefix="easyresume-frozen-") as directory:
             else:
                 raise AssertionError("Frozen server startup timeout")
             assert info["url"] != "http://127.0.0.1:8780", "Occupied port must not be reused"
-            duplicate = subprocess.run(command, capture_output=True, timeout=15)
+            duplicate = subprocess.run(command, capture_output=True, timeout=15, env=runtime_env)
             assert duplicate.returncode == 0
             assert json.loads(runtime.read_text("utf-8")) == info, (
                 "Duplicate launch replaced running instance"
@@ -50,7 +58,7 @@ with TemporaryDirectory(prefix="easyresume-frozen-") as directory:
             assert "<html" in httpx.get(base).text.lower()
             assert httpx.get(base + "/api/v1/state", headers=headers).json()["profiles"] == []
             document = Document()
-            document.add_paragraph("合成打包测试简历，本科，Python")
+            document.add_paragraph("教育经历\n2018.09 - 2022.06\n合成示例大学\n计算机科学 本科\n已毕业\n技能\n熟悉 Python")
             content = io.BytesIO()
             document.save(content)
             result = httpx.post(
@@ -75,6 +83,7 @@ with TemporaryDirectory(prefix="easyresume-frozen-") as directory:
                             "single instance",
                             "empty user workspace",
                             "DOCX spawned parser",
+                            "runtime PATH without Python or Node",
                             "sending disabled",
                         ],
                         "clean_windows_verified": False,
