@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest';
-import { localServer, observe } from './observe';
+import { localServer, observe, observeSelection } from './observe';
 
 describe('local-only pairing URL', () => {
   it('accepts only loopback root addresses', () => {
@@ -45,6 +45,22 @@ describe('synthetic BOSS DOM, not a real compatibility claim', () => {
   it('never reads chats or other sites', () => {
     expect(() => observe(document, 'https://www.zhipin.com/web/geek/chat')).toThrow('聊天');
     expect(() => observe(document, 'https://evil.example')).toThrow('BOSS');
+    expect(() => observe(document, 'https://www.zhipin.com/web/passport/safe/verify')).toThrow(
+      '登录',
+    );
+    expect(() =>
+      observeSelection(document, 'https://www.zhipin.com/web/passport/safe/verify', 'a'.repeat(30)),
+    ).toThrow('登录');
+  });
+  it('ignores inactive hidden verification widgets but stops at visible ones', () => {
+    document.title = '合成职位';
+    document.body.innerHTML =
+      '<h1 class="job-name">合成运维职位</h1><div class="job-sec-text">合成职位描述</div><div style="display:none"><div id="captcha">请完成验证</div></div>';
+    expect(observe(document, 'https://www.zhipin.com/job_detail/synthetic.html')).toHaveLength(1);
+    document.querySelector('#captcha')!.parentElement!.style.display = 'block';
+    expect(() => observe(document, 'https://www.zhipin.com/job_detail/synthetic.html')).toThrow(
+      '验证',
+    );
   });
   it('extracts visible list cards without following links', () => {
     document.title = '合成列表';
@@ -54,5 +70,56 @@ describe('synthetic BOSS DOM, not a real compatibility claim', () => {
     expect(result).toHaveLength(1);
     expect(result[0].page_kind).toBe('list');
     expect(result[0].text).not.toContain('招聘者');
+  });
+  it('reads an isolated recommendation detail without a job link and never mixes left cards', () => {
+    document.title = '合成推荐页';
+    document.body.innerHTML =
+      '<aside class="job-list-box"><div class="job-card-wrapper"><span class="job-name">左侧其他职位</span><span class="company-name">左侧其他公司</span><span class="salary">40-60K</span></div></aside><section class="job-detail-box"><h1 class="job-name">右侧当前职位</h1><span class="company-name">右侧当前公司</span><span class="salary">8-12K</span><div class="job-sec-text">当前岗位要求 Linux 运维与网络基础</div><div class="boss-info">不应读取的招聘者</div></section>';
+    const result = observe(document, 'https://www.zhipin.com/web/geek/job-recommend?ka=tracking');
+    expect(result).toHaveLength(1);
+    expect(result[0].title).toBe('右侧当前职位');
+    expect(result[0].company).toBe('右侧当前公司');
+    expect(result[0].text).not.toMatch(/左侧|40-60K|招聘者/);
+    expect(result[0].platform_job_id).toBe('');
+    expect(result[0].url).toBe('https://www.zhipin.com/web/geek/job-recommend');
+  });
+  it('does not borrow a left-hand title when recommendation detail is incomplete', () => {
+    document.title = '合成推荐页';
+    document.body.innerHTML =
+      '<div class="job-card-wrapper"><span class="job-name">左侧职位</span></div><section class="job-detail-box"><div class="job-sec-text">右侧描述但没有标题</div></section>';
+    expect(() => observe(document, 'https://www.zhipin.com/web/geek/job-recommend')).toThrow(
+      '选中',
+    );
+  });
+  it('ignores a hidden previous detail when the recommendation page retains old DOM', () => {
+    document.title = '合成推荐页';
+    document.body.innerHTML =
+      '<section class="job-detail-box" hidden><h1>旧岗位</h1><div class="job-sec-text">旧岗位描述</div></section><section class="job-detail-box"><h1>当前岗位</h1><div class="job-sec-text">当前岗位描述</div></section>';
+    const result = observe(document, 'https://www.zhipin.com/web/geek/job-recommend');
+    expect(result[0].title).toBe('当前岗位');
+    expect(result[0].text).not.toContain('旧岗位');
+  });
+  it('allows an explicit selected excerpt without collecting surrounding page text', () => {
+    document.title = '合成推荐页';
+    document.body.innerHTML = '<p>不应读取的页面姓名与聊天</p>';
+    const result = observeSelection(
+      document,
+      'https://www.zhipin.com/web/geek/job-recommend',
+      '合成 Linux 运维\n维护服务器和虚拟化环境，周末双休，需要网络基础。',
+    );
+    expect(result[0].title).toBe('合成 Linux 运维');
+    expect(result[0].company).toBe('');
+    expect(result[0].platform_job_id).toBe('');
+    expect(result[0].page_kind).toBe('unknown');
+    expect(result[0].text).not.toContain('页面姓名');
+    expect(() =>
+      observeSelection(document, 'https://www.zhipin.com/web/geek/job-recommend', ''),
+    ).toThrow('先');
+    expect(() =>
+      observeSelection(document, 'https://www.zhipin.com/web/geek/chat', 'a'.repeat(30)),
+    ).toThrow('聊天');
+    expect(() => observeSelection(document, 'https://www.zhipin.com/', 'a'.repeat(30))).toThrow(
+      '职位列表',
+    );
   });
 });

@@ -6,7 +6,7 @@ from easyresume.models import now_iso
 from easyresume.resume import DEGREE_LEVELS, education_issues
 from easyresume.schemas import EducationRecord, Evidence, Job, Profile, SkillRecord, WorkRecord
 
-PARSER_VERSION = "rules-2.0"
+PARSER_VERSION = "rules-2.1"
 DEGREES = DEGREE_LEVELS
 SKILLS = {
     "Python": ["python"],
@@ -227,6 +227,13 @@ DATE_RANGE = re.compile(
 )
 SCHOOL = re.compile(r"[\u4e00-\u9fffA-Za-z·]{2,50}(?:大学|学院|学校)")
 COMPANY = re.compile(r"[\u4e00-\u9fffA-Za-z·（）()]{1,70}(?:有限公司|公司|集团|银行|工作室)")
+ADJACENT_ENTITIES = (
+    re.compile(r"(?P<entity>[\u4e00-\u9fffA-Za-z·]{2,100}?(?:大学|学院|学校))(?:[ \t]*(?P=entity))+"),
+    re.compile(
+        r"(?P<entity>[\u4e00-\u9fffA-Za-z·（）()]{2,100}?(?:有限公司|公司|集团|银行|工作室))"
+        r"(?:[ \t]*(?P=entity))+"
+    ),
+)
 HEADINGS = {
     "教育经历": "education",
     "教育背景": "education",
@@ -309,8 +316,13 @@ def parse_profile(text: str) -> Profile:
         start = _partial_date(dates["start"]) if dates else ""
         end = _partial_date(dates["end"]) if dates else ""
         ongoing = bool(dates and not end and re.search(r"至今|现在|在职|present|current", dates["end"], re.I))
-        school = SCHOOL.search(block)
-        company = COMPANY.search(block)
+        # Adjacent copies can also be present in a PDF's actual text. Normalize
+        # complete entities only in the parsing view; evidence stays untouched.
+        entity_text = block
+        for pattern in ADJACENT_ENTITIES:
+            entity_text = pattern.sub(r"\g<entity>", entity_text)
+        school = SCHOOL.search(entity_text)
+        company = COMPANY.search(entity_text)
         explicit_degree = re.search(r"(?:学历|学位)\s*[:：]?\s*(?:本科|大专|专科|硕士|博士|高中|中专)", block)
         education = section == "education" or (section == "unknown" and (school or explicit_degree))
         fact = {
@@ -382,8 +394,10 @@ def parse_profile(text: str) -> Profile:
             if end and not current:
                 profile.review_notes.append(f"请核对 {record.school or '教育经历'} 的结束时间及毕业状态")
         elif section in {"work", "internship"} or (section == "unknown" and company and dates):
+            title_text = COMPANY.sub(" ", DATE_RANGE.sub(" ", entity_text))
             title_match = re.search(
-                r"[\u4e00-\u9fffA-Za-z /]{0,30}(?:工程师|技术员|专员|经理|顾问|助理|开发|运维|实习生)", block
+                r"[\u4e00-\u9fffA-Za-z /]{0,30}(?:工程师|技术员|专员|经理|顾问|助理|开发|运维|实习生)",
+                title_text,
             )
             employment = (
                 "internship"
@@ -395,8 +409,6 @@ def parse_profile(text: str) -> Profile:
                 else "unknown"
             )
             title = title_match[0].strip() if title_match else ""
-            if company:
-                title = title.removeprefix(company[0]).strip(" |/，,:：")
             profile.work_records.append(
                 WorkRecord(
                     **fact,

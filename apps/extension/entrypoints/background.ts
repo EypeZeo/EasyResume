@@ -1,6 +1,6 @@
 import { browser } from 'wxt/browser';
 import { localServer, type Observation } from '../lib/observe';
-import { connectionState, pairingInfo, type Connection } from '../lib/connection';
+import { connectionState, pairingInfo, revokeConnection, type Connection } from '../lib/connection';
 
 export default defineBackground(() => {
   void browser.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
@@ -70,10 +70,14 @@ export default defineBackground(() => {
       return { connected: true };
     }
     if (message?.type === 'DISCONNECT') {
+      const { connection } = await browser.storage.local.get<{ connection?: Connection }>(
+        'connection',
+      );
+      const revoked = await revokeConnection(connection);
       await browser.storage.local.remove('connection');
-      return { disconnected: true };
+      return { disconnected: true, server_revoked: revoked };
     }
-    if (message?.type === 'READ') {
+    if (message?.type === 'READ' || message?.type === 'READ_SELECTION') {
       const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
       if (
         !tab?.id ||
@@ -83,7 +87,9 @@ export default defineBackground(() => {
       )
         throw new Error('请先打开BOSS职位列表或详情页');
       try {
-        return await browser.tabs.sendMessage(tab.id, { type: 'COLLECT_CURRENT_PAGE' });
+        return await browser.tabs.sendMessage(tab.id, {
+          type: message.type === 'READ_SELECTION' ? 'COLLECT_SELECTION' : 'COLLECT_CURRENT_PAGE',
+        });
       } catch {
         throw new Error('请刷新招聘页面，使新安装的只读扩展生效');
       }

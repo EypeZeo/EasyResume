@@ -12,6 +12,101 @@ MAX_FILE = 20 * 1024 * 1024
 MAX_MEMORY = 512 * 1024 * 1024
 
 
+def _remove_pdf_text_overlays(page):
+    """Remove exact repeated, position-anchored text runs, never repeated words.
+
+    Some PDF exporters draw a text layer twice. Comparing extracted strings loses
+    the distinction between those overlays and real repeated content. Keep all
+    positioning/state operations and suppress only the redundant drawing in a
+    complete run that will end at ET or the next absolute text matrix.
+    """
+    from pypdf.generic import ArrayObject, DecodedStreamObject, NameObject, TextStringObject
+
+    contents = page.get_contents()
+    if contents is None:
+        return
+    text_state_ops = {b"Tf", b"Tc", b"Tw", b"Tz", b"TL", b"Tr", b"Ts"}
+    draw_ops = {b"Tj", b"TJ"}
+    supported = text_state_ops | draw_ops | {b"BT", b"Tm", b"Td", b"TD", b"T*"}
+    text_state, transform, stack = {}, (), []
+    output, run, seen = [], [], set()
+    initial_state, initial_transform = {}, ()
+    in_text, changed = False, False
+
+    def frozen(operands):
+        return tuple(
+            (
+                type(value).__name__,
+                value.get_encoded_bytes()
+                if isinstance(value, TextStringObject)
+                else frozen(value)
+                if isinstance(value, ArrayObject)
+                else repr(value),
+            )
+            for value in operands
+        )
+
+    def flush():
+        nonlocal run, changed
+        if not run:
+            return
+        duplicate = False
+        if any(op in draw_ops for _, op in run) and all(op in supported for _, op in run):
+            # A run that sets its own font/spacing does not depend on inherited values.
+            inherited = initial_state.copy()
+            for _, op in run:
+                if op in draw_ops:
+                    break
+                if op in text_state_ops:
+                    inherited.pop(op, None)
+                elif op == b"TD":
+                    inherited.pop(b"TL", None)
+            key = (
+                initial_transform,
+                tuple(sorted(inherited.items())),
+                tuple((op, frozen(operands)) for operands, op in run),
+            )
+            duplicate = key in seen
+            seen.add(key)
+        output.extend((operands, op) for operands, op in run if not duplicate or op not in draw_ops)
+        changed |= duplicate
+        run = []
+
+    for operands, op in contents.operations:
+        if op == b"BT" or (op == b"Tm" and in_text):
+            flush()
+            in_text = True
+            initial_state, initial_transform = text_state.copy(), transform
+        elif op == b"ET":
+            flush()
+            in_text = False
+        if in_text:
+            run.append((operands, op))
+        else:
+            output.append((operands, op))
+        if op in text_state_ops:
+            text_state[op] = frozen(operands)
+        elif op == b"TD" and len(operands) == 2:
+            text_state[b"TL"] = frozen([-operands[1]])
+        elif op == b'"' and len(operands) == 3:
+            text_state[b"Tw"], text_state[b"Tc"] = frozen(operands[:1]), frozen(operands[1:2])
+        elif op == b"q":
+            stack.append((transform, text_state.copy()))
+        elif op == b"Q" and stack:
+            transform, text_state = stack.pop()
+        elif op in {b"cm", b"gs"}:
+            transform += ((op, frozen(operands)),)
+    # An unclosed text object has no reliable reset boundary; leave it unchanged.
+    output.extend(run)
+    if changed:
+        contents.operations = output
+        # Reparse encoded operands in each extractor's own mode; passing a
+        # ContentStream directly skips pypdf's byte-string decoding for CJK.
+        cleaned = DecodedStreamObject()
+        cleaned.set_data(contents.get_data())
+        page[NameObject("/Contents")] = cleaned
+
+
 def _memory_limit():
     if os.name != "nt":
         import resource
@@ -91,6 +186,7 @@ def _extract(data: bytes) -> tuple[str, str, list[dict]]:
                     )
 
             if "/Contents" in page:
+                _remove_pdf_text_overlays(page)
                 page.extract_text(visitor_text=visitor)
                 page_text = page.extract_text(extraction_mode="layout") or ""
             else:

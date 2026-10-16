@@ -2,14 +2,24 @@ import { localServer } from './observe';
 
 export type Connection = { base: string; token: string; installation: string };
 export type ConnectionState = 'unpaired' | 'connected' | 'offline' | 'expired' | 'incompatible';
-export type PairingInfo = { base: string; code: string; protocol: 1; expires_at: string };
+export type PairingInfo = { base: string; code: string; protocol: 1; expires_at?: string };
 
 export function pairingInfo(input: string, now = Date.now()): PairingInfo {
+  const compact = input.trim().replace(/[\s-]/g, '');
+  if (/^\d{25}$/.test(compact)) {
+    const port = Number(compact.slice(0, 5));
+    if (port < 1 || port > 65535) throw new Error('连接码中的地址无效，请在工作台重新生成');
+    return {
+      base: localServer(`http://127.0.0.1:${port}`),
+      code: compact.slice(5),
+      protocol: 1,
+    };
+  }
   let data: unknown;
   try {
     data = JSON.parse(input);
   } catch {
-    throw new Error('请粘贴工作台复制的完整连接信息');
+    throw new Error('请粘贴工作台复制的完整连接码（5 组数字）');
   }
   if (!data || typeof data !== 'object') throw new Error('连接信息格式不正确');
   const info = data as Partial<PairingInfo>;
@@ -31,6 +41,26 @@ export function pairingInfo(input: string, now = Date.now()): PairingInfo {
     protocol: 1,
     expires_at: info.expires_at,
   };
+}
+
+/** Local removal is always possible; an offline server cannot confirm revocation. */
+export async function revokeConnection(
+  connection?: Connection,
+  request: typeof fetch = fetch,
+): Promise<boolean> {
+  if (!connection) return true;
+  try {
+    const response = await request(`${localServer(connection.base)}/api/v1/connection`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${connection.token}` },
+      signal: AbortSignal.timeout(5000),
+      redirect: 'error',
+      cache: 'no-store',
+    });
+    return response.ok || response.status === 401 || response.status === 403;
+  } catch {
+    return false;
+  }
 }
 
 export async function connectionState(

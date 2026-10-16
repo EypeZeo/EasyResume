@@ -3,6 +3,9 @@ import hashlib
 import io
 import json
 import secrets
+import threading
+import time
+from collections import deque
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -84,6 +87,13 @@ def create_app(data_dir: Path, *, development=False, static_dir: Path | None = N
     app.state.epoch = epoch
     app.state.gui_token = gui_token
     app.state.data_dir = data_dir
+    connection_lock = threading.Lock()
+    connection_activity: dict[str, tuple[float, str]] = {}
+    pairing_attempts: deque[float] = deque()
+
+    def touch_connection(installation_id):
+        with connection_lock:
+            connection_activity[installation_id] = (time.monotonic(), now_iso())
 
     @app.exception_handler(RequestValidationError)
     async def invalid_request(request: Request, exc: RequestValidationError):
@@ -165,7 +175,37 @@ def create_app(data_dir: Path, *, development=False, static_dir: Path | None = N
 
     @app.get("/api/v1/connection")
     def connection(auth=Depends(authenticate)):
+        if auth["role"] == "reader":
+            touch_connection(auth["id"])
         return {"protocol": 1, "installation_id": auth["id"], "instance": epoch, "permissions": ["read"]}
+
+    @app.delete("/api/v1/connection")
+    def disconnect(auth=Depends(authenticate), session: Session = Depends(get_session)):
+        if auth["role"] != "reader":
+            raise HTTPException(403, "此接口只用于扩展断开自身连接")
+        credential = session.get(Credential, auth["id"])
+        credential.revoked = True
+        invalidate(session, "扩展连接撤销")
+        session.commit()
+        with connection_lock:
+            connection_activity.pop(auth["id"], None)
+        return {"revoked": True}
+
+    @app.get("/api/v1/connections/status", dependencies=[Depends(workbench)])
+    def connection_status(session: Session = Depends(get_session)):
+        connections = []
+        with connection_lock:
+            activity = dict(connection_activity)
+        for credential in session.scalars(
+            select(Credential).where(Credential.role == "reader", Credential.revoked.is_(False))
+        ):
+            seen = activity.get(credential.id)
+            connections.append({
+                "id": credential.id, "label": credential.label, "created_at": credential.created_at,
+                "state": "connected" if seen and time.monotonic() - seen[0] < 20 else "idle",
+                "last_seen_at": seen[1] if seen else None,
+            })
+        return {"connections": connections, "active_window_seconds": 20}
 
     def get_record(session, record_id, kind=None):
         record = session.get(Record, record_id)
@@ -709,8 +749,9 @@ def create_app(data_dir: Path, *, development=False, static_dir: Path | None = N
         raise HTTPException(409, "平台动作尚未通过真实验证；当前仅支持生成草稿和人工操作，不会派发发送指令")
 
     @app.post("/api/v1/pairing", dependencies=[Depends(workbench)])
-    def pairing(session: Session = Depends(get_session)):
-        code = secrets.token_urlsafe(24)
+    def pairing(request: Request, session: Session = Depends(get_session)):
+        # Twenty random digits provide ~66 bits; the five-digit port is routing only.
+        code = "".join(str(secrets.randbelow(10)) for _ in range(20))
         add_expiry = (datetime.now(UTC) + timedelta(minutes=5)).isoformat()
         session.add(
             Credential(
@@ -720,6 +761,9 @@ def create_app(data_dir: Path, *, development=False, static_dir: Path | None = N
         session.commit()
         return {
             "code": code,
+            "connection_code": "-".join([
+                f"{request.url.port or 80:05d}", *(code[i:i + 5] for i in range(0, 20, 5))
+            ]),
             "expires_at": add_expiry,
             "permissions": ["observe_boss"],
             "note": "只读配对，不授予发送或审批权限",
@@ -729,6 +773,14 @@ def create_app(data_dir: Path, *, development=False, static_dir: Path | None = N
     def pair(body: PairInput, session: Session = Depends(get_session)):
         if body.protocol != 1:
             raise HTTPException(409, "扩展协议不兼容，请升级")
+        # Global process-wide bound, so opening more tabs cannot multiply guesses.
+        with connection_lock:
+            current = time.monotonic()
+            while pairing_attempts and current - pairing_attempts[0] >= 60:
+                pairing_attempts.popleft()
+            if len(pairing_attempts) >= 10:
+                raise HTTPException(429, "连接尝试过于频繁，请一分钟后重试")
+            pairing_attempts.append(current)
         hashed = hashlib.sha256(body.code.encode()).hexdigest()
         result = session.execute(
             update(Credential)
@@ -748,6 +800,7 @@ def create_app(data_dir: Path, *, development=False, static_dir: Path | None = N
         )
         session.add(credential)
         session.commit()
+        touch_connection(credential.id)
         return {
             "token": token,
             "protocol": 1,

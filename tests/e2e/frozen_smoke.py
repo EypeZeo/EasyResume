@@ -12,8 +12,10 @@ from tempfile import TemporaryDirectory
 import httpx
 import psutil
 from docx import Document
+from pypdf import PdfWriter
+from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
-executable = Path(os.environ.get("EASYRESUME_TEST_EXE", "artifacts/windows/v0.2.0-beta.1/EasyResume/EasyResume.exe")).resolve()
+executable = Path(os.environ.get("EASYRESUME_TEST_EXE", "artifacts/windows/v0.2.0-beta.2/EasyResume/EasyResume.exe")).resolve()
 assert executable.is_file(), "Build the Windows test distribution first"
 with TemporaryDirectory(prefix="easyresume-frozen-") as directory:
     root = Path(directory)
@@ -71,6 +73,21 @@ with TemporaryDirectory(prefix="easyresume-frozen-") as directory:
             assert result.status_code == 200, result.text
             assert result.json()["profile"]["education_completed"] == "本科"
             assert result.json()["format"] == "docx"
+            writer = PdfWriter()
+            page = writer.add_blank_page(width=600, height=700)
+            font = DictionaryObject({NameObject('/Type'): NameObject('/Font'),
+                NameObject('/Subtype'): NameObject('/Type1'), NameObject('/BaseFont'): NameObject('/Helvetica')})
+            page[NameObject('/Resources')] = DictionaryObject({NameObject('/Font'): DictionaryObject({
+                NameObject('/F1'): writer._add_object(font)})})
+            stream = DecodedStreamObject()
+            stream.set_data(b'BT /F1 12 Tf 1 0 0 1 30 600 Tm (Synthetic College) Tj ET\n' * 2)
+            page[NameObject('/Contents')] = writer._add_object(stream)
+            pdf = io.BytesIO()
+            writer.write(pdf)
+            result = httpx.post(base + '/api/v1/profiles/upload', headers=headers,
+                               files={'file': ('synthetic-overlay.pdf', pdf.getvalue())}, timeout=35)
+            assert result.status_code == 200, result.text
+            assert result.json()['profile']['text'].count('Synthetic College') == 1
             assert not httpx.get(base + "/api/v1/health").json()["verified_actions"]
             print(
                 json.dumps(
@@ -84,6 +101,7 @@ with TemporaryDirectory(prefix="easyresume-frozen-") as directory:
                             "single instance",
                             "empty user workspace",
                             "DOCX spawned parser",
+                            "PDF duplicate text layer in spawned parser",
                             "runtime PATH without Python or Node",
                             "sending disabled",
                         ],

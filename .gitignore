@@ -18,6 +18,7 @@ test-results/
 .env*
 !.env.example
 data/
+/本地验证/
 *.log
 *.spec
 *.egg-info/

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { ArrowDownToLine, Upload } from 'lucide-react';
 import { download, post, request } from './api';
 import { AiSettings } from './AiAssist';
+import { useConnectionStatus } from './useConnectionStatus';
 
 export default function SettingsPage({
   state,
@@ -22,21 +23,16 @@ export default function SettingsPage({
   const [pair, setPair] = useState<any>(null);
   const [now, setNow] = useState(Date.now());
   const [copied, setCopied] = useState(false);
+  const connectionStatus = useConnectionStatus(tab === 'extension');
   useEffect(() => {
+    if (!pair || tab !== 'extension') return;
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
-  }, []);
+  }, [pair, tab]);
   const seconds = pair
     ? Math.max(0, Math.ceil((new Date(pair.expires_at).getTime() - now) / 1000))
     : 0;
-  const envelope = pair
-    ? JSON.stringify({
-        base: location.origin,
-        code: pair.code,
-        expires_at: pair.expires_at,
-        protocol: 1,
-      })
-    : '';
+  const connectionCode = pair?.connection_code ?? '';
   return (
     <>
       <section className="page-heading">
@@ -62,29 +58,21 @@ export default function SettingsPage({
       {tab === 'extension' && (
         <section className="panel settings-content">
           <h2>连接浏览器扩展</h2>
-          <ol className="setup-steps">
-            <li>
-              从{' '}
-              <a
-                href="https://github.com/EypeZeo/EasyResume/releases"
-                target="_blank"
-                rel="noreferrer"
-              >
-                下载页
-              </a>{' '}
-              下载并安装扩展，安装方法见{' '}
-              <a
-                href="https://github.com/EypeZeo/EasyResume#readme"
-                target="_blank"
-                rel="noreferrer"
-              >
-                使用手册
-              </a>
-              。
-            </li>
-            <li>在下方生成连接信息，复制到扩展的连接输入框中。</li>
-            <li>在浏览器打开 BOSS 职位页，点击扩展中的读取按钮，再回工作台检查岗位。</li>
-          </ol>
+          <details
+            className="connection-instructions"
+            open={!connectionStatus.ready || !connectionStatus.connections.length}
+          >
+            <summary>安装与连接步骤</summary>
+            <ol className="setup-steps">
+              <li>
+                打开 Chrome 或 Edge
+                的扩展管理页，启用开发者模式，选择“加载已解压的扩展程序”，打开安装包中的{' '}
+                <code>extension</code> 文件夹。
+              </li>
+              <li>生成连接码，复制到扩展中连接。只需连接一次。</li>
+              <li>打开 BOSS 职位页，在扩展中读取岗位，回工作台检查。</li>
+            </ol>
+          </details>
           <p className="helper">扩展读取当前页面。自动发送尚未开放。</p>
           <div className="action-row">
             <button
@@ -97,29 +85,38 @@ export default function SettingsPage({
                 })
               }
             >
-              {pair && !seconds ? '重新生成连接信息' : '生成连接信息'}
+              {pair && !seconds ? '重新生成连接码' : '生成连接码'}
             </button>
             {pair && (
               <button
                 className="button secondary"
-                disabled={!seconds}
+                disabled={!seconds || !connectionCode}
                 onClick={() =>
                   void run(async () => {
-                    await navigator.clipboard.writeText(envelope);
+                    await navigator.clipboard.writeText(connectionCode);
                     setCopied(true);
                   })
                 }
               >
-                {copied ? '已复制连接信息' : '复制连接信息'}
+                {copied ? '已复制连接码' : '复制连接码'}
               </button>
             )}
           </div>
           {pair && (
             <div className="pair-box">
-              <p role="status">
+              <label className="field">
+                连接码
+                <input
+                  className="connection-code"
+                  readOnly
+                  value={connectionCode || '请重新生成连接码'}
+                  onFocus={(event) => event.target.select()}
+                />
+              </label>
+              <p className="helper">
                 {seconds
-                  ? `连接信息还可使用 ${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`
-                  : '连接信息已过期，请重新生成。'}
+                  ? `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒后过期`
+                  : '连接码已过期，请重新生成。'}
               </p>
               <details>
                 <summary>手动填写连接信息</summary>
@@ -142,32 +139,42 @@ export default function SettingsPage({
             </div>
           )}
           <div className="panel-heading">
-            <h3>已授权的扩展</h3>
-            <button
-              className="text-button"
-              onClick={() =>
-                void run(async () => {
-                  await refresh();
-                })
-              }
-            >
-              刷新连接列表
+            <h3>扩展连接</h3>
+            <button className="text-button" onClick={() => void connectionStatus.refresh(true)}>
+              检查连接
             </button>
           </div>
-          {!state.connections.length && <p className="muted">尚未连接扩展。</p>}
-          {state.connections.map((connection: any) => (
-            <div className="record-row" key={connection.id}>
+          <p className="connection-notice" role="status" aria-live="polite">
+            {connectionStatus.notice}
+          </p>
+          <p className="helper">打开扩展后会自动更新状态；关闭扩展时可能休眠。</p>
+          {connectionStatus.serviceOffline ? (
+            <p className="muted">工作台暂时不可用，连接状态待确认。</p>
+          ) : !connectionStatus.ready ? (
+            <p className="muted">正在检查连接…</p>
+          ) : (
+            !connectionStatus.connections.length && <p className="muted">尚未连接扩展。</p>
+          )}
+          {connectionStatus.connections.map((connection) => (
+            <div className="record-row connection-row" key={connection.id}>
               <div>
                 <strong>{connection.label}</strong>
-                <small>已授权；在线状态请在扩展中查看</small>
+                <small>
+                  {connectionStatus.serviceOffline
+                    ? '状态待确认'
+                    : connection.state === 'connected'
+                      ? '已连接'
+                      : '未检测到扩展活动'}
+                </small>
               </div>
               <button
                 className="text-button danger"
                 onClick={() =>
                   void run(async () => {
                     await request(`/connections/${connection.id}`, { method: 'DELETE' });
+                    await connectionStatus.refresh(true);
                     await refresh();
-                  }, '已断开此扩展')
+                  })
                 }
               >
                 断开连接

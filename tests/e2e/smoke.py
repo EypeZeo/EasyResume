@@ -80,7 +80,10 @@ with sync_playwright() as p:
         page.locator("section").filter(has=page.get_by_role("heading", name="按首次联系策略统计"))
     ).to_contain_text("积极回复 1")
     page.get_by_role("button", name="设置与连接", exact=True).click()
-    page.get_by_role("button", name="生成连接信息", exact=True).click()
+    page.get_by_role("button", name="生成连接码", exact=True).click()
+    expect(page.get_by_label("连接码", exact=True)).to_have_value(
+        __import__("re").compile(r"\d{5}(?:-\d{5}){4}")
+    )
     page.get_by_text("手动填写连接信息", exact=True).click()
     expect(page.get_by_label("一次性连接代码", exact=True)).to_have_value(
         __import__("re").compile(r".{20,}")

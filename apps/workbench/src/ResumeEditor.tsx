@@ -578,19 +578,25 @@ export default function ResumeEditor({
             </div>
             <div className="experience-total">
               {summary.months == null
-                ? `正式工作年限待确认（已核对 ${Math.floor(summary.known_months / 12)} 年 ${summary.known_months % 12} 个月）`
+                ? summary.known_months > 0
+                  ? `正式工作年限待确认（已核对 ${Math.floor(summary.known_months / 12)} 年 ${summary.known_months % 12} 个月）`
+                  : work.length
+                    ? '正式工作年限待确认'
+                    : '添加工作经历后计算年限'
                 : `正式工作约 ${Math.floor(summary.months / 12)} 年 ${summary.months % 12} 个月`}
               {summary.omitted > 0 && <span> · {summary.omitted} 条尚未计入</span>}
               <small>重叠月份只计一次。实习、兼职单列；相关经验在筛选策略中选择。</small>
             </div>
-            <label className="field month-field">
-              在职经历计算截止月份
-              <input
-                type="month"
-                value={asOf}
-                onChange={(e) => change({ experience_as_of: e.target.value })}
-              />
-            </label>
+            {!!work.length && (
+              <label className="field month-field">
+                在职经历计算截止月份
+                <input
+                  type="month"
+                  value={asOf}
+                  onChange={(e) => change({ experience_as_of: e.target.value })}
+                />
+              </label>
+            )}
             {work.map((record: any, index: number) => (
               <article className="experience-card" key={record.id}>
                 <div className="panel-heading">

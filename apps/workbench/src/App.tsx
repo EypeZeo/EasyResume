@@ -22,7 +22,7 @@ import {
   ClipboardList,
   FileText,
   FolderArchive,
-  Leaf,
+  FileCheck2,
   Link,
   ListFilter,
   LoaderCircle,
@@ -681,8 +681,15 @@ export default function App() {
       </a>
       <aside className="sidebar">
         <button className="brand" onClick={() => navigate('jobs')} aria-label="EasyResume 首页">
-          <span className="brand-symbol">
-            <Leaf size={24} />
+          <span className="brand-symbol brand-document">
+            <img
+              src="/logo.svg"
+              alt=""
+              onError={(event) => {
+                event.currentTarget.hidden = true;
+              }}
+            />
+            <FileCheck2 size={24} aria-hidden="true" />
           </span>
           <span>
             Easy<span className="brand-light">Resume</span>
@@ -1092,7 +1099,7 @@ export default function App() {
           )}
 
           {page === 'profile' && (
-            <>
+            <div className="profile-page">
               <section className="page-heading">
                 <div>
                   <h1>我的简历</h1>
@@ -1176,14 +1183,14 @@ export default function App() {
                   }
                 }}
               />
-              <section className="panel mt">
+              <section className="panel mt saved-profiles">
                 <div className="panel-heading">
                   <h2>已保存的简历</h2>
                   <span>{state.profiles.length} 个版本</span>
                 </div>
                 {!state.profiles.length && <p className="muted">保存后可在这里打开和管理简历。</p>}
                 {state.profiles.map((p) => (
-                  <div className="record-row" key={p.id}>
+                  <div className="record-row saved-profile-row" key={p.id}>
                     <FileText size={18} />
                     <div>
                       <strong>{p.data.name}</strong>
@@ -1195,57 +1202,61 @@ export default function App() {
                         {dateLabel(p.created_at)}
                       </small>
                     </div>
-                    <span className={`badge ${p.data.confirmed ? 'candidate' : 'pending'}`}>
-                      {p.data.confirmed ? '已保存' : '需重新检查'}
-                    </span>
-                    <button className="text-button" onClick={() => setProfileKey(p.id)}>
-                      载入编辑
-                    </button>
-                    <button
-                      className="text-button danger"
-                      onClick={() => {
-                        if (
-                          confirm('删除这份简历及后续版本、提取原文和衍生草稿？外部备份不受影响。')
-                        )
-                          void run(async () => {
-                            const ids = new Set([p.id]);
-                            let previous = 0;
-                            while (ids.size !== previous) {
-                              previous = ids.size;
-                              for (const item of state.profiles)
-                                if (ids.has(item.data.parent_id)) ids.add(item.id);
-                            }
-                            await profileDraft.flush();
-                            await strategyDraft.flush();
-                            await request(`/profiles/${p.id}`, { method: 'DELETE' });
-                            const affected = ids.has(profileKey) || ids.has(profile.parent_id);
-                            profileDraft.forgetLinked(ids);
-                            strategyDraft.forgetLinked(ids);
-                            const fresh = await refresh();
-                            if (ids.has(strategy.profile_id) && currentStrategy) {
-                              const updated = fresh.strategies.find(
-                                (item: Row) => item.id === currentStrategy.id,
-                              );
-                              if (updated)
-                                await strategyDraft.reset(
-                                  currentStrategy.id,
-                                  structuredClone(updated.data),
-                                  updated.version,
+                    <div className="profile-row-actions">
+                      <span className={`badge ${p.data.confirmed ? 'candidate' : 'pending'}`}>
+                        {p.data.confirmed ? '已保存' : '需重新检查'}
+                      </span>
+                      <button className="text-button" onClick={() => setProfileKey(p.id)}>
+                        载入编辑
+                      </button>
+                      <button
+                        className="text-button danger"
+                        onClick={() => {
+                          if (
+                            confirm(
+                              '删除这份简历及后续版本、提取原文和衍生草稿？外部备份不受影响。',
+                            )
+                          )
+                            void run(async () => {
+                              const ids = new Set([p.id]);
+                              let previous = 0;
+                              while (ids.size !== previous) {
+                                previous = ids.size;
+                                for (const item of state.profiles)
+                                  if (ids.has(item.data.parent_id)) ids.add(item.id);
+                              }
+                              await profileDraft.flush();
+                              await strategyDraft.flush();
+                              await request(`/profiles/${p.id}`, { method: 'DELETE' });
+                              const affected = ids.has(profileKey) || ids.has(profile.parent_id);
+                              profileDraft.forgetLinked(ids);
+                              strategyDraft.forgetLinked(ids);
+                              const fresh = await refresh();
+                              if (ids.has(strategy.profile_id) && currentStrategy) {
+                                const updated = fresh.strategies.find(
+                                  (item: Row) => item.id === currentStrategy.id,
                                 );
-                            }
-                            if (affected) {
-                              await profileDraft.reset('new', { ...profileBlank });
-                              setProfileKey('new');
-                            }
-                          }, '简历及本地衍生内容已删除');
-                      }}
-                    >
-                      删除
-                    </button>
+                                if (updated)
+                                  await strategyDraft.reset(
+                                    currentStrategy.id,
+                                    structuredClone(updated.data),
+                                    updated.version,
+                                  );
+                              }
+                              if (affected) {
+                                await profileDraft.reset('new', { ...profileBlank });
+                                setProfileKey('new');
+                              }
+                            }, '简历及本地衍生内容已删除');
+                        }}
+                      >
+                        删除
+                      </button>
+                    </div>
                   </div>
                 ))}
               </section>
-            </>
+            </div>
           )}
 
           {page === 'strategy' && (

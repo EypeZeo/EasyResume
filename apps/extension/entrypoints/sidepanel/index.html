@@ -1,63 +1,75 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-surface="sidepanel">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>EasyResume 只读侧栏</title>
+    <title>EasyResume 职位助手</title>
   </head>
   <body>
     <main>
       <header>
-        <span class="mark">E</span>
+        <img class="mark" src="/logo.svg" width="38" height="38" alt="" />
         <div>
           <h1>EasyResume</h1>
-          <p>职位助手</p>
+          <p>把合适的岗位带回工作台</p>
         </div>
+        <span id="connection" class="connection" role="status" aria-live="polite">检查连接</span>
       </header>
-      <p class="notice">打开 BOSS 职位页，读取并保存到工作台。</p>
-      <p id="connection" role="status" aria-live="polite">正在检查连接…</p>
-      <button id="refresh" class="secondary">重新检查连接</button>
-      <section id="pair">
-        <label
-          >粘贴工作台的连接信息<textarea
-            id="connection-info"
-            autocomplete="off"
-            spellcheck="false"
-            placeholder="在工作台生成并复制连接信息，然后粘贴到这里"
-          ></textarea>
-        </label>
-        <button id="connect">连接工作台</button>
+      <p id="connection-help" class="muted"></p>
+      <section id="pair" class="card">
+        <label for="connection-info">工作台连接码</label>
+        <input
+          id="connection-info"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="粘贴工作台生成的连接码"
+        />
+        <button id="connect" class="primary">连接工作台</button>
         <details>
-          <summary>手动连接</summary>
-          <p>地址用于找到这台电脑上的 EasyResume，通常无需更改。连接码在工作台生成。</p>
-          <label>工作台地址<input id="base" value="http://127.0.0.1:8765" type="url" /></label>
-          <label>连接码<input id="code" autocomplete="off" /></label>
-          <button id="manual-connect">使用地址和连接码</button>
+          <summary>连接地址与手动设置</summary>
+          <p class="muted">地址用于找到这台电脑上的 EasyResume，通常无需更改。</p>
+          <label for="base">工作台地址</label
+          ><input id="base" value="http://127.0.0.1:8765" type="url" />
+          <label for="code">连接码或旧版配对码</label><input id="code" autocomplete="off" />
+          <button id="manual-connect" class="secondary">使用地址和连接码</button>
         </details>
       </section>
-      <section id="connected" hidden>
-        <button id="read">读取当前职位页</button>
-        <div id="preview"></div>
-        <label>城市<input id="city" placeholder="如：上海" /></label
-        ><label
-          >用工类型<select id="employment">
-            <option value="unknown">未确认</option>
-            <option value="full_time">全职</option>
-            <option value="internship">实习</option>
-            <option value="part_time">兼职</option>
-          </select></label
-        ><label
-          >招聘对象<select id="recruitment">
-            <option value="unknown">未确认</option>
-            <option value="campus">校招</option>
-            <option value="social">社招</option>
-          </select></label
-        ><button id="save" disabled>保存到工作台</button>
+      <section id="connected" class="card" hidden>
+        <h2>当前招聘页面</h2>
+        <p class="muted">打开 BOSS 职位列表或详情，再读取当前内容。</p>
+        <button id="read" class="primary">读取当前职位页</button>
+        <button id="read-selection" class="text-button fallback">读取选中的职位文字</button>
+        <div id="preview" aria-label="读取的岗位"></div>
+        <details id="advanced-fields">
+          <summary>补充筛选信息（可选）</summary>
+          <label for="city">城市</label><input id="city" placeholder="如：上海" />
+          <div class="field-row">
+            <label
+              >用工类型<select id="employment">
+                <option value="unknown">未确认</option>
+                <option value="full_time">全职</option>
+                <option value="internship">实习</option>
+                <option value="part_time">兼职</option>
+              </select></label
+            >
+            <label
+              >招聘对象<select id="recruitment">
+                <option value="unknown">未确认</option>
+                <option value="campus">校招</option>
+                <option value="social">社招</option>
+              </select></label
+            >
+          </div>
+        </details>
+        <button id="save" class="secondary" disabled>保存到工作台</button>
       </section>
-      <button id="disconnect" class="secondary" hidden>断开连接</button
-      ><button id="workbench" class="secondary">打开工作台</button>
       <p id="status" role="status" aria-live="polite"></p>
-      <footer>当前支持读取岗位，自动发送尚不支持。</footer>
+      <nav class="actions" aria-label="工作台操作">
+        <button id="workbench" class="text-button">打开工作台 ↗</button>
+
+        <button id="disconnect" class="text-button" hidden>断开连接</button>
+      </nav>
+      <footer>仅整理岗位，发送消息由你在招聘平台完成。</footer>
     </main>
     <script type="module" src="../popup/main.ts"></script>
   </body>

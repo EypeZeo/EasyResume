@@ -2,6 +2,8 @@
 
 EasyResume's own code is MIT. Dependency licenses remain in effect; this is not a claim that every bundled component is MIT.
 
+The application and extension logo adapts Lucide `FileCheck2` (ISC). Commercial use is permitted with the retained notice in `brand/LICENSE-LUCIDE.txt` (Windows package) or `LICENSE-LUCIDE.txt` (extension); editable assets and provenance are in `assets/brand/` in the source repository.
+
 - pypdf: BSD-3-Clause. https://github.com/py-pdf/pypdf/blob/main/LICENSE
 - python-docx: MIT. https://github.com/python-openxml/python-docx
 - FastAPI / Starlette / SQLAlchemy / Alembic / Pydantic: consult bundled distribution license texts.

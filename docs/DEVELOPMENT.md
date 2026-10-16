@@ -36,14 +36,19 @@ API 生成后检查差异并提交。测试必须使用独立的 `--data-dir`，
 在 Windows x64 构建：
 
 ```powershell
-powershell -NoProfile -File scripts/build.ps1 -ReleaseVersion v0.2.0-beta.1
+powershell -NoProfile -File scripts/build.ps1 -ReleaseVersion v0.2.0-beta.2
+powershell -NoProfile -File scripts/stage_local.ps1 -Version v0.2.0-beta.2
 ```
 
 脚本安装锁定依赖、运行静态/类型/单元检查、构建前端与扩展、生成许可清单、打包 PyInstaller 目录，再生成以下资产：
 
-- `artifacts/release/EasyResume-v0.2.0-beta.1-windows-x64.zip`
-- `artifacts/release/EasyResume-v0.2.0-beta.1-extension.zip`
+- `artifacts/release/EasyResume-v0.2.0-beta.2-windows-x64.zip`
+- `artifacts/release/EasyResume-v0.2.0-beta.2-extension.zip`
 - `artifacts/release/SHA256SUMS.txt`
+
+`stage_local.ps1` 另将已构建程序放入 `本地验证/versions/<版本>`，更新固定启动入口及 `本地验证/extension`。旧程序包和旧扩展备份保留，不修改用户数据、不终止运行中的应用。再次投放必须使用新版本号；验证前需用户退出旧服务。
+
+连接码由五位端口加二十位密码学随机数字组成，仅连接回环地址，五分钟单次有效；全进程最多每分钟十次配对尝试。授权仍使用32字节随机令牌。连接活动记录只在服务内存，20秒没有心跳标记idle，不把浏览器弹窗休眠等同于凭据撤销。
 
 发行包必须保持 `EasyResume.exe`、`_internal`、`extension` 和手册在同一目录。构建脚本只生成文件，不自动发布。`.github/workflows/windows-package.yml` 可手动构建并上传 Actions 产物；完成验证后才把对应产物上传 GitHub Release。
 

@@ -4,6 +4,8 @@
 
 EasyResume helps you review your résumé, compare jobs, and prepare message drafts. The app currently uses Chinese; the actual button names are included below.
 
+**Local test build v0.2.0-beta.2:** If you have the local test folder, launch `本地验证/启动 EasyResume.cmd` after closing the older app window. Load the extension from the fixed `本地验证/extension` folder; after an update, reload it in the browser extension manager and refresh BOSS. The download links below still point to the published beta.1.
+
 ## 1. Download and start
 
 1. Open the [Windows test release](https://github.com/EypeZeo/EasyResume/releases/tag/v0.2.0-beta.1). Under **Assets**, download `EasyResume-v0.2.0-beta.1-windows-x64.zip`. GitHub's “Source code” is not the Windows app.
@@ -58,11 +60,11 @@ The manual workflow works without it. BOSS reading is experimental; page changes
 
 1. Open `chrome://extensions` in Chrome or `edge://extensions` in Edge.
 2. Enable **Developer mode**, choose **Load unpacked**, and select the package's `extension` folder. For the separate extension ZIP, extract it and select the folder containing `manifest.json`.
-3. In the workbench, open **设置与连接 → 浏览器扩展**, then **生成连接信息 → 复制连接信息** (Generate / Copy connection information).
-4. In the extension, paste into **粘贴工作台的连接信息** and click **连接工作台** (Connect). Regenerate expired information.
+3. In the workbench, open **设置与连接 → 浏览器扩展**, then **生成连接码 → 复制连接码** (Generate / Copy connection information).
+4. In the extension, paste into **工作台连接码** and click **连接工作台** (Connect). Regenerate expired information.
 5. Log in to BOSS yourself, open a job page, and choose **读取当前职位页** (Read current job page). Review and click **保存到工作台** (Save). Refresh the page after installing if needed.
 
-If the workbench is unavailable, start the EXE and click **重新检查连接** (Recheck connection). Reconnect after backup restoration if needed. Do not share connection information.
+While open, the extension checks the connection every five seconds. “未检测到扩展活动” can mean the popup is closed, not that access was revoked. If disconnected, start the app; if expired, generate a new code. Codes contain five groups of five digits and expire in five minutes. Do not share them. If automatic reading fails, select one job’s title and description and use **读取选中的职位文字**; review the first-line title and company in the workbench. Logged-in BOSS recommendation pages still need real verification.
 
 Website terms may restrict third-party tools. Stop on verification or account warnings and handle them on the website. See [platform validation](docs/PLATFORM_VALIDATION.md) for the tested scope.
 
