@@ -5,6 +5,8 @@ import importlib.metadata as metadata
 import json
 import ssl
 import sys
+import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -141,8 +143,16 @@ for name, url, expected in native_sources:
     target = native / name
     if target.is_file() and hashlib.sha256(target.read_bytes()).hexdigest() == expected:
         continue
-    with urllib.request.urlopen(url, timeout=60) as response:
-        data = response.read(35_000_001)
+    for attempt in range(3):
+        try:
+            print(f"Fetching native notice/source: {name} (attempt {attempt + 1}/3)", flush=True)
+            with urllib.request.urlopen(url, timeout=20) as response:
+                data = response.read(35_000_001)
+            break
+        except (OSError, urllib.error.URLError) as error:
+            if attempt == 2:
+                raise RuntimeError(f"Unable to download required native notice/source: {name}") from error
+            time.sleep(2 ** attempt)
     if len(data) > 35_000_000 or hashlib.sha256(data).hexdigest() != expected:
         raise RuntimeError(f"Native notice/source integrity check failed: {name}")
     target.write_bytes(data)
