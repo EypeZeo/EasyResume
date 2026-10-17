@@ -52,6 +52,13 @@ def main():
         parser.error("Extension version does not match release")
     if set(manifest.get("permissions", [])) - {"storage", "activeTab", "sidePanel"}:
         parser.error("Unexpected extension permissions")
+    expected_hosts = {
+        "http://127.0.0.1/*", "https://www.zhipin.com/*", "https://zhipin.com/*",
+        "https://www.zhaopin.com/*", "https://zhaopin.com/*",
+        "https://sou.zhaopin.com/*", "https://jobs.zhaopin.com/*",
+    }
+    if set(manifest.get("host_permissions", [])) != expected_hosts:
+        parser.error("Recruiting tab discovery requires exactly the documented local/BOSS/Zhaopin hosts")
     destination = root / "artifacts/release"
     destination.mkdir(parents=True, exist_ok=True)
     windows = destination / f"EasyResume-{args.version}-windows-x64.zip"

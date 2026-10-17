@@ -4,7 +4,7 @@
 
 EasyResume helps you review your résumé, compare jobs, and prepare message drafts. The app currently uses Chinese; the actual button names are included below.
 
-**Local test build v0.2.0-beta.3:** If you have the local test folder, launch `本地验证/启动 EasyResume.cmd` after closing the older app window. Load the extension from the fixed `本地验证/extension` folder; after an update, reload it in the extension manager and refresh the workbench and recruiting pages. The download links below still point to the published beta.1. Automatic connection, Zhaopin, and batch reading are local beta.3 test features.
+**Local test build v0.2.0-beta.4:** If you have the local test folder, launch `本地验证/启动 EasyResume.cmd` after closing the older app window. Load the extension from the fixed `本地验证/extension` folder; after an update, reload it in the extension manager and refresh the workbench and recruiting pages. The download links below still point to the published beta.1. Automatic connection, Zhaopin, and batch reading are local beta.4 test features.
 
 ## 1. Download and start
 
@@ -56,7 +56,7 @@ Create greeting or clarification drafts in job details, then review them in **�
 
 ## 4. Optional browser extension
 
-The manual workflow works without it. These steps apply to local **beta.3**, which adds experimental BOSS / Zhaopin right-hand detail reading and user-started batch reading. The public beta.1 still uses a pairing code and contains the earlier BOSS prototype. Page changes can break extraction. Automatic sending is unavailable.
+The manual workflow works without it. These steps apply to local **beta.4**, which adds experimental BOSS / Zhaopin right-hand detail reading and user-started batch reading. The public beta.1 still uses a pairing code and contains the earlier BOSS prototype. Page changes can break extraction. Automatic sending is unavailable.
 
 1. Open `chrome://extensions` in Chrome or `edge://extensions` in Edge.
 2. Enable **Developer mode**, choose **Load unpacked**, and select the package's `extension` folder. For the separate extension ZIP, extract it and select the folder containing `manifest.json`.
@@ -75,6 +75,10 @@ If reading fails, select one job’s title and description and use **读取选�
 A real Zhaopin page's DOM and loading from 20 to 40 list entries were independently observed. After selecting a second job, its right-hand details did not load. BOSS debugging returned to the homepage or lost the browser channel. Neither site's complete real read/save/batch workflow has passed acceptance.
 
 Website terms may restrict third-party tools. Stop on verification or account warnings and handle them on the website. See [platform validation](docs/PLATFORM_VALIDATION.md) for the tested scope.
+
+You can also use **设置与连接 → 浏览器扩展 → 从浏览器整理岗位** in the workbench. Select the site, click **定位招聘页面**, then **读取浏览器当前职位**. Choose a tab if several job pages are open. A homepage is followed only through its actual Jobs link, once per action. Failures show a reason without repeated refreshes. Batch pause, resume, and stop are available here too.
+
+If the browser asks about site access after updating, check that recruiting access is limited to BOSS and Zhaopin. It lets the workbench locate open job tabs; it does not enable Cookie access or automatic applications.
 
 ## 5. Back up, restore, and upgrade
 
@@ -101,7 +105,7 @@ Report [issues](https://github.com/EypeZeo/EasyResume/issues) with the version, 
 
 ## 7. Current scope and developer resources
 
-Available: local résumé/job organization, rules, optional AI suggestions, drafts, and backups. Local beta.3 adds experimental BOSS / Zhaopin read-only adapters and bounded batch reading; public beta.1 has an earlier scope. Automatic sending, OCR, company verification, commute maps, and 51job collection are unavailable. Complete real-site workflows and real-résumé accuracy require separate validation.
+Available: local résumé/job organization, rules, optional AI suggestions, drafts, and backups. Local beta.4 adds experimental BOSS / Zhaopin read-only adapters and bounded batch reading; public beta.1 has an earlier scope. Automatic sending, OCR, company verification, commute maps, and 51job collection are unavailable. Complete real-site workflows and real-résumé accuracy require separate validation.
 
 [Development](docs/DEVELOPMENT.md) · [Design](docs/PLAN.md) · [Validation](docs/STATUS.md) · [Third-party notices](THIRD_PARTY_NOTICES.md)
 

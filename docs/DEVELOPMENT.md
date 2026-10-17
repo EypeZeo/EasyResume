@@ -68,6 +68,18 @@ powershell -NoProfile -File scripts/stage_local.ps1 -Version v0.2.0-beta.2
 
 扩展只连接 `http://127.0.0.1` 根地址。配对码短期、单次有效；长期令牌仅存可信扩展上下文。`GET /api/v1/connection` 使用读取凭据验证实际连接，不能用存储里存在令牌代替在线状态。内容脚本没有管理、发送、Cookie 或任意网络代理权限。
 
+### 工作台中的浏览器操作
+
+已连接的工作台通过 `easyresume:browser-command` 事件发送 `{request_id: UUID, type, ...受限参数}`，扩展回复 `easyresume:browser-result` 的 `{request_id, result}`。仅允许连接状态、页面定位、岗位读取与保存，以及有数量/页数上限的批量任务和暂停/停止。事件本身不授予权限；后台必须再次验证本扩展主框架、工作台根地址、有效读取凭据和配对地址，并校验招聘标签页所属窗口、隐身模式及平台。
+
+此桥不接受发送、配对、断开管理或任意 URL/API 代理。保存最多 20 条岗位，并逐字段复制 Observation；读取凭据及证明不回传页面，业务错误 `code` 保留。页面动作串行，状态/暂停/停止可并行，总并发最多 4 项；20 秒未返回时只提示核对，不自动重试。相同请求编号不会再次派发，迟到结果不会覆盖超时提示；完成的状态轮询缓存可回收，不挤掉仍在运行的操作。
+
+`apps/extension/lib/bridge.test.ts` 覆盖命令白名单、凭据隔离、参数限制、请求编号复用、并发和超时；这些本地测试不能代替登录后的真实招聘页面验证。
+
 ## 更多设计资料
 
 [设计基线](PLAN.md) · [验证状态](STATUS.md) · [平台验证](PLATFORM_VALIDATION.md) · [标注规范](ANNOTATION.md)
+
+### 招聘标签页发现权限
+
+工作台按钮不是 Chrome 扩展的 activeTab 手势。静态 content_scripts.matches 也不能替代后台读取 tabs.Tab.url/title 的权限。因此 host_permissions 限于已有内容脚本的 BOSS/智联六个来源和本机回环地址，不申请全局 tabs、Cookie 或所有网站权限。更新后若浏览器提示站点访问变更，需要用户确认读取这两个招聘网站。依据：[Tabs API 权限](https://developer.chrome.com/docs/extensions/reference/api/tabs#permissions)、[activeTab 手势](https://developer.chrome.com/docs/extensions/develop/concepts/activeTab#invoking_activetab)。回归必须在未点击扩展图标、未临时授予 activeTab 时通过，不能用手工授权掩盖缺失的权限。

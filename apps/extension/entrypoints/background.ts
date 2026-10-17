@@ -8,6 +8,55 @@ import {
   type ConnectionResult,
 } from '../lib/connection';
 import type { BatchSnapshot } from '../lib/batch';
+import {
+  chooseRecruitingEntrypoint,
+  classifyRecruitingPage,
+  resolveRecruitingTab,
+  type RecruitingPageStatus,
+  type RecruitingPlatform,
+} from '../lib/navigation';
+
+type NavigationRequest = {
+  tabId?: number;
+  platform?: RecruitingPlatform;
+  purpose?: 'current' | 'batch';
+  entryUrl?: string;
+};
+class PageSelectionError extends Error {
+  readonly code = 'NEEDS_SELECTION';
+  constructor(readonly choices: object[]) {
+    super('发现多个招聘页面，请选择本次要读取的页面');
+  }
+}
+class PageReadError extends Error {
+  constructor(
+    message: string,
+    readonly diagnostics?: unknown,
+  ) {
+    super(message);
+  }
+}
+class PageCommandTimeout extends PageReadError {}
+
+async function bounded<T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+  timeout: () => Error,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(timeout()), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+type NavigationLifetime = { deadline: number; cancelled: boolean; message?: string };
 
 type Task = {
   status: 'idle' | 'running' | 'paused' | 'completed' | 'stopped' | 'error';
@@ -22,6 +71,7 @@ type Task = {
   taskId?: string;
   installation?: string;
   seen: string[];
+  scope?: { platform: RecruitingPlatform; href: string };
 };
 const emptyTask = (): Task => ({
   status: 'idle',
@@ -44,6 +94,7 @@ export default defineBackground(() => {
   let loop: Promise<void> | undefined;
   let pairBusy = false;
   let starting = false;
+  let navigationBusy = false;
   let connectionWrites: Promise<unknown> = Promise.resolve();
   const mutateConnection = <T>(operation: () => Promise<T>): Promise<T> => {
     const result = connectionWrites.then(operation, operation);
@@ -51,7 +102,7 @@ export default defineBackground(() => {
     return result;
   };
   let cached: { at: number; result: ConnectionResult } | undefined;
-  let checking: Promise<ConnectionResult> | undefined;
+  let checking: { epoch: number; promise: Promise<ConnectionResult> } | undefined;
   const errorText = (error: unknown) =>
     error instanceof Error ? error.message : '操作失败，请重试';
   const persist = () => browser.storage.session.set({ batch: task });
@@ -71,11 +122,11 @@ export default defineBackground(() => {
 
   async function status(force = false, hints: string[] = []): Promise<ConnectionResult> {
     await ready;
-    if (checking) return checking;
+    if (checking?.epoch === generation) return checking.promise;
     const ttl = cached?.result.state === 'connected' ? 3000 : 30000;
     if (!force && cached && Date.now() - cached.at < ttl) return cached.result;
     const epoch = generation;
-    checking = (async (): Promise<ConnectionResult> => {
+    const promise = (async (): Promise<ConnectionResult> => {
       const stored = await browser.storage.local.get<{ connection?: Connection }>('connection');
       const result = await reconnectConnection(stored.connection, hints);
       if (epoch !== generation) return { state: 'unpaired' };
@@ -88,9 +139,10 @@ export default defineBackground(() => {
       cached = { at: Date.now(), result };
       return result;
     })().finally(() => {
-      checking = undefined;
+      if (checking?.promise === promise) checking = undefined;
     });
-    return checking;
+    checking = { epoch, promise };
+    return promise;
   }
   function publicStatus(result: ConnectionResult) {
     return {
@@ -141,24 +193,224 @@ export default defineBackground(() => {
       pairBusy = false;
     }
   }
-  async function activeJobTab() {
-    const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
-    if (!tab?.id) throw new Error('请先打开 BOSS 或智联职位列表页');
-    if (tab.url) {
-      const url = new URL(tab.url);
-      if (url.protocol !== 'https:' || !RECRUITING_HOSTS.includes(url.hostname))
-        throw new Error('请先打开 BOSS 或智联职位列表页');
-    }
-    return tab as typeof tab & { id: number };
-  }
-  async function command(tabId: number, message: object) {
-    let result;
+  async function activeJobTab(request: NavigationRequest = {}, selection = false) {
+    if (navigationBusy) throw new Error('正在定位招聘页面，请稍候');
+    navigationBusy = true;
+    const navigation: NavigationLifetime = { deadline: Date.now() + 12000, cancelled: false };
     try {
-      result = await browser.tabs.sendMessage(tabId, message);
-    } catch {
+      return await bounded(resolveJobTab(request, selection, navigation), 12000, () => {
+        navigation.cancelled = true;
+        return new PageReadError(
+          `${navigation.message || '招聘页面定位'}。等待页面超时，请检查后重试；不会重复跳转`,
+        );
+      });
+    } finally {
+      navigation.cancelled = true;
+      navigationBusy = false;
+    }
+  }
+  async function resolveJobTab(
+    request: NavigationRequest,
+    selection: boolean,
+    navigation: NavigationLifetime,
+  ) {
+    const checkNavigation = () => {
+      if (navigation.cancelled || Date.now() >= navigation.deadline)
+        throw new PageReadError('招聘页面定位超时，请检查后重试；不会重复跳转');
+    };
+    const pageStatus = (tabId: number) => {
+      checkNavigation();
+      return command(
+        tabId,
+        { type: 'PAGE_STATUS' },
+        Math.min(2000, navigation.deadline - Date.now()),
+      );
+    };
+    if (request.platform !== undefined && !['boss', 'zhilian'].includes(request.platform))
+      throw new Error('招聘平台选择无效');
+    if (request.purpose !== undefined && !['current', 'batch'].includes(request.purpose))
+      throw new Error('读取方式无效');
+    const [active] = await browser.tabs.query({ active: true, currentWindow: true });
+    checkNavigation();
+    if (active?.id === undefined) throw new Error('请先打开 BOSS 或智联招聘页面');
+    const tabs = await browser.tabs.query({ currentWindow: true });
+    checkNavigation();
+    const scoped = tabs.filter(
+      (tab) =>
+        tab.id !== undefined &&
+        tab.windowId === active.windowId &&
+        !!tab.incognito === !!active.incognito,
+    );
+    const resolution = resolveRecruitingTab(
+      scoped.map((tab) => ({
+        id: tab.id!,
+        windowId: tab.windowId ?? 0,
+        incognito: !!tab.incognito,
+        url: tab.url,
+        title: tab.title,
+      })),
+      {
+        windowId: active.windowId ?? 0,
+        incognito: !!active.incognito,
+        activeTabId: active.id,
+        platform: request.platform,
+        purpose: request.purpose ?? 'current',
+      },
+    );
+    if (resolution.state === 'blocked')
+      throw new Error('当前是登录、验证或个人页面，请处理后打开职位列表再读取');
+    let target = active;
+    let navigated = false;
+    let needsEntry = false;
+    const expectedPlatform = request.platform ?? classifyRecruitingPage(active.url).platform;
+    if (request.tabId !== undefined) {
+      if (!Number.isInteger(request.tabId)) throw new Error('招聘页面选择无效');
+      const chosen = scoped.find((tab) => tab.id === request.tabId);
+      const page = classifyRecruitingPage(chosen?.url);
+      if (
+        !chosen ||
+        (expectedPlatform && page.platform !== expectedPlatform) ||
+        (page.kind !== 'home' &&
+          page.kind !== 'list' &&
+          (request.purpose === 'batch' || page.kind !== 'detail'))
+      )
+        throw new Error('所选招聘页面已变化，请重新选择');
+      target = chosen;
+      needsEntry = page.kind === 'home';
+    } else if (resolution.state === 'ready' || resolution.state === 'activate') {
+      target = scoped.find((tab) => tab.id === resolution.choice.tabId)!;
+    } else if (resolution.state === 'choose') {
+      throw new PageSelectionError(
+        resolution.choices.map((choice) => ({ ...choice, kind: 'tab' })),
+      );
+    } else {
+      const homes = scoped.filter((tab) => {
+        const page = classifyRecruitingPage(tab.url);
+        return page.kind === 'home' && (!expectedPlatform || page.platform === expectedPlatform);
+      });
+      const currentHome = homes.find((tab) => tab.id === active.id);
+      if (currentHome) target = currentHome;
+      else if (homes.length === 1) target = homes[0];
+      else if (homes.length > 1)
+        throw new PageSelectionError(
+          homes.map((tab) => ({
+            kind: 'tab',
+            tabId: tab.id,
+            platform: classifyRecruitingPage(tab.url).platform,
+            title:
+              tab.title?.trim().slice(0, 120) ||
+              (classifyRecruitingPage(tab.url).platform === 'boss' ? 'BOSS 首页' : '智联首页'),
+          })),
+        );
+      else
+        throw new Error(
+          `请先打开${expectedPlatform === 'boss' ? ' BOSS ' : expectedPlatform === 'zhilian' ? '智联' : ' BOSS 或智联'}招聘网页的“职位”页面`,
+        );
+      needsEntry = true;
+    }
+    const selectedPlatform = classifyRecruitingPage(target.url).platform;
+    const selectedHref = target.url;
+    if (target.id !== active.id) await browser.tabs.update(target.id!, { active: true });
+    checkNavigation();
+    if (needsEntry) {
+      const page = (await pageStatus(target.id!)) as RecruitingPageStatus;
+      checkNavigation();
+      if (
+        page.page?.kind !== 'home' ||
+        (expectedPlatform && page.page.platform !== expectedPlatform)
+      )
+        throw new Error('招聘首页已变化，请重新定位');
+      const entry = chooseRecruitingEntrypoint(page.entries ?? []);
+      const chosen = request.entryUrl
+        ? page.entries?.find((item) => item.url === request.entryUrl)
+        : entry.state === 'ready'
+          ? entry.entry
+          : undefined;
+      if (request.entryUrl && !chosen) throw new Error('职位入口已变化，请重新定位招聘页面');
+      if (!chosen && entry.state === 'choose')
+        throw new PageSelectionError(
+          entry.entries.map((item) => ({
+            kind: 'entry',
+            entryUrl: item.url,
+            title: item.text || '招聘职位',
+          })),
+        );
+      if (!chosen) throw new Error('未找到职位入口，请先在 BOSS 或智联网页点击“职位”');
+      await browser.tabs.update(target.id!, { url: chosen.url, active: true });
+      checkNavigation();
+      navigated = true;
+    }
+    let lastMessage = '';
+    let lastDiagnostics: unknown;
+    for (let attempt = 0; attempt < 24; attempt++) {
+      if (attempt || navigated) await new Promise((resolve) => setTimeout(resolve, 500));
+      checkNavigation();
+      const live = (await browser.tabs.query({ currentWindow: true })).find(
+        (tab) => tab.id === target.id,
+      );
+      checkNavigation();
+      if (!live || live.windowId !== active.windowId || !!live.incognito !== !!active.incognito)
+        throw new Error('招聘页面已关闭或移到其他窗口，请重新选择');
+      const location = classifyRecruitingPage(live.url);
+      if (location.platform !== selectedPlatform || (!navigated && live.url !== selectedHref))
+        throw new Error('招聘页面的平台或列表范围已变化，请重新选择');
+      if (['verification', 'login', 'chat'].includes(location.kind))
+        throw new Error('招聘页面进入登录、验证或个人页面，已停止定位');
+      let page: RecruitingPageStatus;
+      try {
+        page = await pageStatus(target.id!);
+        checkNavigation();
+      } catch (error) {
+        if (error instanceof PageCommandTimeout || navigation.cancelled) throw error;
+        lastMessage = errorText(error);
+        if (error instanceof PageReadError) lastDiagnostics = error.diagnostics;
+        continue;
+      }
+      if (['verification', 'login', 'chat'].includes(page.page?.kind))
+        throw new Error('招聘页面进入登录、验证或个人页面，已停止定位');
+      if (page.page?.platform !== selectedPlatform)
+        throw new Error('招聘页面的平台已变化，请重新选择');
+      const supported = page.page?.kind === 'list' || page.page?.kind === 'detail';
+      if (
+        supported &&
+        (request.purpose === 'batch'
+          ? page.page.kind === 'list' && page.listCount > 0
+          : selection || page.canRead)
+      )
+        return { ...live, id: target.id! };
+      lastMessage =
+        page.message ??
+        (page.page?.kind === 'home' ? '招聘网站返回了首页' : '职位详情尚未加载完成');
+      lastDiagnostics = page.diagnostics;
+      navigation.message = lastMessage;
+    }
+    throw new PageReadError(
+      `${lastMessage || '职位页面尚未就绪'}。请在网页选中职位后重试；不会重复跳转`,
+      lastDiagnostics,
+    );
+  }
+  async function command(tabId: number, message: object, timeoutMs?: number) {
+    let result;
+    const type = (message as { type?: string }).type;
+    const limit =
+      timeoutMs ??
+      (type === 'PAGE_STATUS' || type === 'BATCH_STOP'
+        ? 2000
+        : type === 'BATCH_STEP'
+          ? 18000
+          : 5000);
+    try {
+      result = await bounded(
+        browser.tabs.sendMessage(tabId, message),
+        limit,
+        () => new PageCommandTimeout('招聘页面响应超时，本次操作结果尚未确认；请检查页面后重试'),
+      );
+    } catch (error) {
+      if (error instanceof PageCommandTimeout) throw error;
       throw new Error('招聘页面未响应，请刷新页面后重新开始');
     }
-    if (!result || result.error) throw new Error(result?.error || '招聘页面未响应');
+    if (!result || result.error)
+      throw new PageReadError(result?.error || '招聘页面未响应', result?.diagnostics);
     return result;
   }
   async function save(
@@ -215,9 +467,7 @@ export default defineBackground(() => {
       task = { ...task, status: stopped ? 'stopped' : 'paused', message };
       await persist();
       if (task.tabId && task.taskId)
-        await browser.tabs
-          .sendMessage(task.tabId, { type: 'BATCH_STOP', taskId: task.taskId })
-          .catch(() => {});
+        await command(task.tabId, { type: 'BATCH_STOP', taskId: task.taskId }).catch(() => {});
     }
     return { ...task };
   }
@@ -255,6 +505,19 @@ export default defineBackground(() => {
           targetKey: target?.key,
         });
         if (epoch !== batchEpoch || task.status !== 'running') return;
+        const page = classifyRecruitingPage(step.href);
+        const previousUrl = task.scope && new URL(task.scope.href);
+        const nextUrl = new URL(step.href);
+        if (
+          !task.scope ||
+          page.platform !== task.scope.platform ||
+          page.kind !== 'list' ||
+          nextUrl.origin !== previousUrl!.origin ||
+          nextUrl.pathname !== previousUrl!.pathname ||
+          (target && nextUrl.href !== task.scope.href)
+        )
+          throw new Error('职位列表范围已变化，请停止旧任务后重新开始');
+        task.scope = { platform: task.scope.platform, href: nextUrl.href };
         snapshot = step;
         task.pages = pageOffset + snapshot.pageNumber;
         if (step.observation && target) {
@@ -298,8 +561,24 @@ export default defineBackground(() => {
       const connection = await status(true);
       if (connection.state !== 'connected' || !connection.connection)
         throw new Error('请先连接工作台');
-      const tab = await activeJobTab();
+      if (resume) {
+        if (!task.scope) throw new Error('此任务缺少页面范围信息，请停止旧任务后重新开始');
+        const original = (await browser.tabs.query({ currentWindow: true })).find(
+          (tab) => tab.id === task.tabId,
+        );
+        if (
+          !original?.url ||
+          new URL(original.url).href !== task.scope.href ||
+          classifyRecruitingPage(original.url).platform !== task.scope.platform
+        )
+          throw new Error('职位平台、城市或搜索范围已变化，请停止旧任务后重新开始');
+      }
+      const tab = resume
+        ? await activeJobTab({ tabId: task.tabId, purpose: 'batch' })
+        : await activeJobTab({ ...message, purpose: 'batch' });
       if (resume && tab.id !== task.tabId) throw new Error('请回到原批量任务的招聘标签页');
+      if (resume && (!tab.url || new URL(tab.url).href !== task.scope!.href))
+        throw new Error('职位列表范围已变化，请停止旧任务后重新开始');
       const maxJobs = resume ? task.maxJobs : Number(message.maxJobs ?? 20);
       const maxPages = resume
         ? task.maxPages
@@ -330,6 +609,15 @@ export default defineBackground(() => {
       });
       if (epoch !== batchEpoch || connectionGeneration !== generation)
         throw new Error('批量任务已取消');
+      const scopePage = classifyRecruitingPage(snapshot.href);
+      if (
+        !scopePage.platform ||
+        scopePage.platform !== classifyRecruitingPage(tab.url).platform ||
+        scopePage.kind !== 'list' ||
+        new URL(snapshot.href).href !== new URL(tab.url!).href ||
+        (resume && new URL(snapshot.href).href !== task.scope!.href)
+      )
+        throw new Error('职位列表范围已变化，请停止旧任务后重新开始');
       task = {
         ...(resume ? task : emptyTask()),
         status: 'running',
@@ -340,6 +628,7 @@ export default defineBackground(() => {
         autoPage: resume ? task.autoPage : message.autoPage === true,
         pages: resume ? task.pages : 1,
         installation: connection.connection.installation,
+        scope: { platform: scopePage.platform, href: new URL(snapshot.href).href },
         message: '正在逐条读取右侧详情',
       };
       await persist();
@@ -366,6 +655,110 @@ export default defineBackground(() => {
       ),
     ];
   }
+  async function handleCommand(message: any, commandGeneration = generation) {
+    if (message?.type === 'LOCATE_JOB_PAGE') {
+      if (task.status === 'running') throw new Error('批量任务正在执行，请先暂停或停止');
+      const tab = await activeJobTab(message);
+      return { located: true, tabId: tab.id, page: await command(tab.id, { type: 'PAGE_STATUS' }) };
+    }
+    if (message?.type === 'PAGE_STATUS') {
+      const tabs = await browser.tabs.query({ currentWindow: true });
+      const active = tabs.find((tab) => tab.active);
+      const tab =
+        message.tabId === undefined
+          ? active
+          : tabs.find(
+              (tab) =>
+                tab.id === message.tabId &&
+                tab.windowId === active?.windowId &&
+                !!tab.incognito === !!active?.incognito,
+            );
+      if (tab?.id === undefined) throw new Error('请先选择招聘页面');
+      return command(tab.id, { type: 'PAGE_STATUS' });
+    }
+    if (message?.type === 'STATUS') return publicStatus(await status());
+    if (message?.type === 'AUTO_CONNECT') {
+      let result = await status(true, await hints());
+      if (commandGeneration !== generation) throw new Error('连接操作已取消');
+      await mutateConnection(async () => {
+        if (commandGeneration !== generation) throw new Error('连接操作已取消');
+        if (result.state === 'expired') {
+          await browser.storage.local.remove('connection');
+          cached = undefined;
+          result = { state: 'unpaired' };
+        }
+        await browser.storage.local.set({ autoPairDisabled: false });
+      });
+      if (commandGeneration !== generation) throw new Error('连接操作已取消');
+      if (result.state === 'unpaired') {
+        for (const tab of await browser.tabs.query({ url: 'http://127.0.0.1/*' }))
+          if (tab.id)
+            await browser.tabs.sendMessage(tab.id, { type: 'WORKBENCH_RECONNECT' }).catch(() => {});
+      }
+      return publicStatus(await status(true, await hints()));
+    }
+    if (message?.type === 'PAIR') {
+      if (task.status === 'running') throw new Error('请先停止批量任务再切换连接');
+      const input =
+        message.info ||
+        JSON.stringify({
+          base: localServer(String(message.base)),
+          code: String(message.code ?? '').trim(),
+          protocol: 1,
+          expires_at: new Date(Date.now() + 60000).toISOString(),
+        });
+      return pair(input, undefined, commandGeneration);
+    }
+    if (message?.type === 'DISCONNECT') {
+      const epoch = ++generation;
+      cached = undefined;
+      const stored = await browser.storage.local.get<{ connection?: Connection }>('connection');
+      await mutateConnection(async () => {
+        await browser.storage.local.set({ autoPairDisabled: true });
+        await browser.storage.local.remove('connection');
+      });
+      await cancelBatch('连接已断开，批量任务已停止', true);
+      const proven = await reconnectConnection(stored.connection, await hints());
+      const revoked =
+        proven.state === 'expired' ||
+        (proven.state === 'connected' && (await revokeConnection(proven.connection)));
+      if (epoch === generation) cached = { at: Date.now(), result: { state: 'unpaired' } };
+      return { disconnected: true, server_revoked: !stored.connection || revoked };
+    }
+    if (message?.type === 'BATCH_STATUS') return { ...task };
+    if (message?.type === 'BATCH_START') return startBatch(message);
+    if (message?.type === 'BATCH_RESUME') {
+      if (task.status !== 'paused') throw new Error('没有可继续的任务');
+      return startBatch(message, true);
+    }
+    if (message?.type === 'BATCH_PAUSE') return cancelBatch('已暂停，可回到原页面继续');
+    if (message?.type === 'BATCH_STOP') return cancelBatch('批量任务已停止', true);
+    if (['READ', 'READ_SELECTION', 'SAVE'].includes(message?.type) && task.status === 'running')
+      throw new Error('批量任务正在执行，请先暂停或停止');
+    if (message?.type === 'READ' || message?.type === 'READ_SELECTION') {
+      const tab = await activeJobTab(
+        { ...message, purpose: 'current' },
+        message.type === 'READ_SELECTION',
+      );
+      const result = await command(tab.id, {
+        type: message.type === 'READ_SELECTION' ? 'COLLECT_SELECTION' : 'COLLECT_CURRENT_PAGE',
+      });
+      const live = (await browser.tabs.query({ currentWindow: true })).find(
+        (item) => item.id === tab.id,
+      );
+      if (!result.source?.href || !result.source?.platform)
+        throw new Error('招聘页面使用了旧版读取脚本，请刷新该网页后重试');
+      if (
+        result.source.href !== tab.url ||
+        live?.url !== tab.url ||
+        result.source.platform !== classifyRecruitingPage(tab.url).platform
+      )
+        throw new Error('读取期间招聘页面的平台或列表范围已变化，请重新读取');
+      return result;
+    }
+    if (message?.type === 'SAVE') return save(message.observations);
+    throw new Error('不支持的操作；此扩展没有发送或审批能力');
+  }
   browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const trusted =
       sender.id === browser.runtime.id &&
@@ -375,7 +768,9 @@ export default defineBackground(() => {
       !trusted &&
       sender.id === browser.runtime.id &&
       sender.frameId === 0 &&
-      ['WORKBENCH_BRIDGE_STATUS', 'WORKBENCH_BRIDGE_PAIR'].includes(message?.type)
+      ['WORKBENCH_BRIDGE_STATUS', 'WORKBENCH_BRIDGE_PAIR', 'WORKBENCH_BRIDGE_COMMAND'].includes(
+        message?.type,
+      )
     ) {
       try {
         const url = new URL(sender.url!);
@@ -395,6 +790,40 @@ export default defineBackground(() => {
           connection?: Connection;
           autoPairDisabled?: boolean;
         }>(['connection', 'autoPairDisabled']);
+        if (message.type === 'WORKBENCH_BRIDGE_COMMAND') {
+          const allowed = new Set([
+            'STATUS',
+            'PAGE_STATUS',
+            'LOCATE_JOB_PAGE',
+            'READ',
+            'SAVE',
+            'BATCH_STATUS',
+            'BATCH_START',
+            'BATCH_PAUSE',
+            'BATCH_RESUME',
+            'BATCH_STOP',
+          ]);
+          if (!allowed.has(message.command?.type)) throw new Error('工作台不支持此扩展操作');
+          if (!stored.connection || stored.connection.base !== bridgeBase)
+            throw new Error('请先连接当前工作台');
+          const connection = await status(true, [bridgeBase]);
+          if (connection.state !== 'connected' || connection.connection?.base !== bridgeBase)
+            throw new Error('当前工作台连接不可用');
+          const input = message.command;
+          return handleCommand(
+            {
+              type: input.type,
+              tabId: input.tabId,
+              platform: input.platform,
+              purpose: input.purpose,
+              maxJobs: input.maxJobs,
+              maxPages: input.maxPages,
+              autoPage: input.autoPage,
+              observations: input.observations,
+            },
+            commandGeneration,
+          );
+        }
         if (message.type === 'WORKBENCH_BRIDGE_STATUS') {
           const result = await status(true, [bridgeBase]);
           return {
@@ -406,78 +835,21 @@ export default defineBackground(() => {
           throw new Error('自动连接已停用，请在扩展中手动连接');
         return pair(String(message.info ?? ''), bridgeBase, commandGeneration);
       }
-      if (message?.type === 'STATUS') return publicStatus(await status());
-      if (message?.type === 'AUTO_CONNECT') {
-        let result = await status(true, await hints());
-        if (commandGeneration !== generation) throw new Error('连接操作已取消');
-        await mutateConnection(async () => {
-          if (commandGeneration !== generation) throw new Error('连接操作已取消');
-          if (result.state === 'expired') {
-            await browser.storage.local.remove('connection');
-            cached = undefined;
-            result = { state: 'unpaired' };
-          }
-          await browser.storage.local.set({ autoPairDisabled: false });
-        });
-        if (commandGeneration !== generation) throw new Error('连接操作已取消');
-        if (result.state === 'unpaired') {
-          for (const tab of await browser.tabs.query({ url: 'http://127.0.0.1/*' }))
-            if (tab.id)
-              await browser.tabs
-                .sendMessage(tab.id, { type: 'WORKBENCH_RECONNECT' })
-                .catch(() => {});
-        }
-        return publicStatus(await status(true, await hints()));
-      }
-      if (message?.type === 'PAIR') {
-        if (task.status === 'running') throw new Error('请先停止批量任务再切换连接');
-        const input =
-          message.info ||
-          JSON.stringify({
-            base: localServer(String(message.base)),
-            code: String(message.code ?? '').trim(),
-            protocol: 1,
-            expires_at: new Date(Date.now() + 60000).toISOString(),
-          });
-        return pair(input, undefined, commandGeneration);
-      }
-      if (message?.type === 'DISCONNECT') {
-        const epoch = ++generation;
-        cached = undefined;
-        const stored = await browser.storage.local.get<{ connection?: Connection }>('connection');
-        await mutateConnection(async () => {
-          await browser.storage.local.set({ autoPairDisabled: true });
-          await browser.storage.local.remove('connection');
-        });
-        await cancelBatch('连接已断开，批量任务已停止', true);
-        const proven = await reconnectConnection(stored.connection, await hints());
-        const revoked =
-          proven.state === 'expired' ||
-          (proven.state === 'connected' && (await revokeConnection(proven.connection)));
-        if (epoch === generation) cached = { at: Date.now(), result: { state: 'unpaired' } };
-        return { disconnected: true, server_revoked: !stored.connection || revoked };
-      }
-      if (message?.type === 'BATCH_STATUS') return { ...task };
-      if (message?.type === 'BATCH_START') return startBatch(message);
-      if (message?.type === 'BATCH_RESUME') {
-        if (task.status !== 'paused') throw new Error('没有可继续的任务');
-        return startBatch(message, true);
-      }
-      if (message?.type === 'BATCH_PAUSE') return cancelBatch('已暂停，可回到原页面继续');
-      if (message?.type === 'BATCH_STOP') return cancelBatch('批量任务已停止', true);
-      if (['READ', 'READ_SELECTION', 'SAVE'].includes(message?.type) && task.status === 'running')
-        throw new Error('批量任务正在执行，请先暂停或停止');
-      if (message?.type === 'READ' || message?.type === 'READ_SELECTION') {
-        const tab = await activeJobTab();
-        return command(tab.id, {
-          type: message.type === 'READ_SELECTION' ? 'COLLECT_SELECTION' : 'COLLECT_CURRENT_PAGE',
-        });
-      }
-      if (message?.type === 'SAVE') return save(message.observations);
-      throw new Error('不支持的操作；此扩展没有发送或审批能力');
+      return handleCommand(message, commandGeneration);
     })()
       .then(sendResponse)
-      .catch((error) => sendResponse({ error: errorText(error) }));
+      .catch((error) =>
+        sendResponse(
+          error instanceof PageSelectionError
+            ? { error: error.message, code: error.code, choices: error.choices }
+            : {
+                error: errorText(error),
+                ...(error instanceof PageReadError && error.diagnostics
+                  ? { diagnostics: error.diagnostics }
+                  : {}),
+              },
+        ),
+      );
     return true;
   });
 });

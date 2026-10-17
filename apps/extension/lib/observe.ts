@@ -51,22 +51,38 @@ export function visible(element: Element): boolean {
   return true;
 }
 
-function rawText(node: Node): string {
+function rawText(node: Node, omit = ''): string {
   if (node.nodeType === 3) return node.textContent ?? '';
   if (!(node instanceof node.ownerDocument!.defaultView!.Element)) return '';
-  if (!visible(node) || node.matches('script,style,button,iframe')) return '';
+  if (!visible(node) || node.matches('script,style,button,iframe') || (omit && node.matches(omit)))
+    return '';
   if (node.tagName === 'BR') return '\n';
-  const value = Array.from(node.childNodes).map(rawText).join('');
+  const value = Array.from(node.childNodes)
+    .map((child) => rawText(child, omit))
+    .join('');
   return /^(DIV|P|LI|SECTION|H[1-6])$/.test(node.tagName) ? `\n${value}\n` : value;
 }
 
-function text(root: ParentNode, selectors: string, lines = false): string {
-  const element = Array.from(root.querySelectorAll(selectors)).find(visible);
-  if (!element) return '';
-  const value = rawText(element).trim();
+function elements(root: ParentNode, selectors: string): Element[] {
+  // A selector list is a preference order, not DOM order. Include the supplied root itself.
+  return selectors.split(',').flatMap((selector) => {
+    const own = 'matches' in root && (root as Element).matches(selector) ? [root as Element] : [];
+    return [...own, ...root.querySelectorAll(selector)].filter(visible);
+  });
+}
+
+function formatted(value: string, lines: boolean): string {
   return lines
     ? value.replace(/[\t ]+/g, ' ').replace(/\n\s*\n/g, '\n')
     : value.replace(/\s+/g, ' ');
+}
+
+function text(root: ParentNode, selectors: string, lines = false): string {
+  for (const element of elements(root, selectors)) {
+    const value = rawText(element).trim();
+    if (value) return formatted(value, lines);
+  }
+  return '';
 }
 
 function redact(value: string): string {
@@ -118,11 +134,31 @@ function jobId(url: URL): string {
   );
 }
 
-function detailLink(root: ParentNode, url: URL): URL | undefined {
-  for (const a of root.querySelectorAll<HTMLAnchorElement>(
+function detailLink(
+  root: ParentNode,
+  url: URL,
+  currentTitle: string,
+  card = false,
+): URL | undefined {
+  const links: URL[] = [];
+  for (const a of elements(
+    root,
     'a[href*="/job_detail/"],a[href*="/jobdetail/"],a[href*="jobs.zhaopin.com/"]',
   )) {
-    const target = new URL(a.getAttribute('href')!, url);
+    let target: URL;
+    try {
+      target = new URL(a.getAttribute('href')!, url);
+    } catch {
+      continue;
+    }
+    const label = rawText(a).replace(/\s/g, '');
+    const current =
+      label === currentTitle.replace(/\s/g, '') &&
+      (a.matches('.job-name,.job-title,.job-detail-summary__title-text') ||
+        !!a.closest('.job-name,.job-title,.job-detail-summary__title-text') ||
+        !!a.querySelector('.job-name,.job-title,.job-detail-summary__title-text'));
+    if (!card && (a.closest(JOB_CARDS) || (!current && !/^查看更多(?:职位)?信息$/.test(label))))
+      continue;
     if (
       visible(a) &&
       RECRUITING_HOSTS.includes(target.hostname) &&
@@ -132,14 +168,51 @@ function detailLink(root: ParentNode, url: URL): URL | undefined {
       !target.password &&
       jobId(target)
     )
-      return target;
+      links.push(target);
   }
+  const unique = [
+    ...new Map(links.map((target) => [target.origin + target.pathname, target])).values(),
+  ];
+  if (unique.length === 1) return unique[0];
 }
 
 const BOSS_ROOTS =
   '.job-detail-box,.job-detail-container,.job-detail-content,.detail-content,.job-detail';
-const BOSS_TITLE = '.job-title .name,.job-name,.name h1,.job-title h1,h1,.job-title';
+const BOSS_TITLE = '.job-title .name,.job-name,.name h1,.job-title h1,h1';
 const BOSS_DESCRIPTION = '.job-sec-text,.job-detail-section .text,.job-description';
+const JOB_CARDS = '.job-card-box,.job-card-wrapper,.job-card-body,.job-card';
+const JOB_LISTS = '.job-list-box,.job-list-container,.job-split-layout__left,.job-list-panel';
+const TITLE_METADATA = '.salary,.job-salary';
+
+function outsideCard(element: Element): boolean {
+  return !element.closest(JOB_CARDS);
+}
+
+function bossTitle(root: ParentNode, card = false): string {
+  for (const element of elements(root, BOSS_TITLE)) {
+    if ((!card && !outsideCard(element)) || element.closest(BOSS_DESCRIPTION)) continue;
+    const value = rawText(element, TITLE_METADATA).trim();
+    if (value) return formatted(value, false);
+  }
+  // Older layouts use .job-title for both a leaf title and a title/salary container.
+  // Only accept one remaining text part; ambiguous sibling labels are not a title.
+  for (const element of elements(root, '.job-title')) {
+    if ((!card && !outsideCard(element)) || element.closest(BOSS_DESCRIPTION)) continue;
+    const parts = Array.from(element.childNodes)
+      .map((node) => rawText(node, TITLE_METADATA).trim())
+      .filter(Boolean);
+    if (parts.length === 1) return formatted(parts[0], false);
+  }
+  return '';
+}
+
+function detailText(root: ParentNode, selectors: string, lines = false): string {
+  for (const element of elements(root, selectors).filter(outsideCard)) {
+    const value = rawText(element).trim();
+    if (value) return formatted(value, lines);
+  }
+  return '';
+}
 const base = {
   protocol: 1 as const,
   city: '',
@@ -164,13 +237,12 @@ export function listTargets(document: Document, href: string): ReadTarget[] {
   return cards
     .filter((card) => !cards.some((other) => other !== card && other.contains(card)))
     .flatMap((card) => {
-      const title = text(
-        card,
-        boss(url) ? '.job-name,.job-title' : '.job-card__title-clamp,.job-card__title-main',
-      );
+      const title = boss(url)
+        ? bossTitle(card, true)
+        : text(card, '.job-card__title-clamp,.job-card__title-main');
       if (!title) return [];
       const company = text(card, boss(url) ? '.company-name' : '.job-card__company-name');
-      const link = detailLink(card, url);
+      const link = detailLink(card, url, title, true);
       const location = text(
         card,
         boss(url) ? '.company-location,.job-area' : '.job-card__location',
@@ -226,16 +298,20 @@ function detailObservation(
   document: Document,
 ): Observation | undefined {
   const isBoss = boss(url);
-  const title = text(root, isBoss ? BOSS_TITLE : '.job-detail-summary__title-text');
-  const description = text(root, isBoss ? BOSS_DESCRIPTION : '.job-description__content', true);
+  const title = isBoss ? bossTitle(root) : detailText(root, '.job-detail-summary__title-text');
+  const description = detailText(
+    root,
+    isBoss ? BOSS_DESCRIPTION : '.job-description__content',
+    true,
+  );
   if (!title || !description) return;
-  let company = text(
+  let company = detailText(
     root,
     isBoss
       ? '.sider-company .company-info a,.sider-company .company-name,.company-name,.company-info a'
       : '.job-detail-summary__company-name',
   );
-  let target = detailLink(root, url) ?? url;
+  let target = jobId(url) ? url : (detailLink(root, url, title) ?? url);
   // A selected card can supply its company/link only after title identity is checked.
   const targets = listTargets(document, url.href);
   const matched = jobId(target)
@@ -318,40 +394,126 @@ export function observeSelection(
   ];
 }
 
+/** Structure-only diagnostics: never return page text, HTML, attributes or URL query values. */
+export function diagnosePage(document: Document, href: string) {
+  const url = new URL(href);
+  if (
+    url.protocol !== 'https:' ||
+    !RECRUITING_HOSTS.includes(url.hostname) ||
+    url.username ||
+    url.password ||
+    /\/chat(?:\/|$)|\/passport(?:\/|$)|\/user(?:\/|$)|\/login|\/resume(?:\/|$)/i.test(url.pathname)
+  )
+    throw new Error('仅诊断招聘网站的职位页面结构');
+  const selectors = (
+    boss(url)
+      ? `${BOSS_ROOTS},${BOSS_TITLE},.job-title,${BOSS_DESCRIPTION},${JOB_CARDS},${JOB_LISTS}`
+      : '.job-detail-modules,.job-detail-summary__title-text,.job-description__content,.job-card,.job-list-panel'
+  ).split(',');
+  const counts = Object.fromEntries(
+    [...new Set(selectors)].map((selector) => {
+      const matches = Array.from(document.querySelectorAll(selector));
+      return [selector, { total: matches.length, visible: matches.filter(visible).length }];
+    }),
+  );
+  const describe = (element: Element) => ({
+    tag: element.tagName.toLowerCase(),
+    className: (element.getAttribute('class') ?? '')
+      .split(/\s+/)
+      .filter((value) => /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/.test(value))
+      .slice(0, 8)
+      .join(' '),
+    textLength: element.textContent?.length ?? 0,
+  });
+  const headings = Array.from(
+    document.querySelectorAll(
+      'h1,h2,h3,h4,h5,h6,[class*="title"],[class*="heading"],[role="heading"]',
+    ),
+  )
+    .filter((element) => visible(element) && element.textContent?.trim() === '职位描述')
+    .slice(0, 5);
+  return {
+    pagePath: url.pathname,
+    selectors: counts,
+    descriptionHeadings: headings.flatMap((heading) => {
+      const parent = heading.parentElement;
+      if (!parent) return [];
+      const ancestors = [];
+      for (
+        let ancestor = parent.parentElement;
+        ancestor && ancestors.length < 4;
+        ancestor = ancestor.parentElement
+      )
+        ancestors.push(describe(ancestor));
+      return [
+        {
+          parent: {
+            ...describe(parent),
+            children: Array.from(parent.children)
+              .slice(0, 8)
+              .map((child) => ({
+                ...describe(child),
+                children: Array.from(child.children).slice(0, 8).map(describe),
+              })),
+          },
+          ancestors,
+        },
+      ];
+    }),
+    titleNodes: elements(document, boss(url) ? BOSS_TITLE : '.job-detail-summary__title-text')
+      .filter(outsideCard)
+      .slice(0, 6)
+      .map(describe),
+  };
+}
+
 export function observe(document: Document, href: string): Observation[] {
   const url = allowedPage(document, href);
   const isBoss = boss(url);
   const roots = Array.from(
     document.querySelectorAll(isBoss ? BOSS_ROOTS : '.job-detail-modules'),
   ).filter(visible);
+  const isolatedRoots: Element[] = [];
   if (isBoss)
     for (const description of document.querySelectorAll(BOSS_DESCRIPTION)) {
-      if (!visible(description)) continue;
+      if (!visible(description) || !outsideCard(description)) continue;
       for (
         let node = description.parentElement;
         node && node !== document.body;
         node = node.parentElement
       ) {
-        if (node.querySelector('.job-card-box,.job-card-wrapper,.job-list-box,.job-card')) break;
-        if (node.querySelector(BOSS_TITLE)) {
-          if (!roots.includes(node)) roots.push(node);
+        if (elements(node, JOB_LISTS).length) break;
+        if (bossTitle(node)) {
+          if (!isolatedRoots.includes(node)) isolatedRoots.push(node);
           break;
         }
       }
     }
-  for (const root of roots) {
-    if (root.querySelector('.job-card-box,.job-card-wrapper,.job-list-box,.job-card')) continue;
+  for (const root of [...isolatedRoots, ...roots]) {
+    if (elements(root, JOB_LISTS).length) continue;
     const observation = detailObservation(root, url, document);
     if (observation) return [observation];
   }
   // On standalone detail pages the title and description share the document, not the list.
   if (jobId(url)) {
-    const observation = detailObservation(document, url, document);
+    const observation = elements(document, JOB_LISTS).length
+      ? undefined
+      : detailObservation(document, url, document);
     if (observation) return [observation];
     throw new Error('未找到可验证的职位标题或描述，可能页面已改版；请手动粘贴');
   }
-  if (roots.length || /job-recommend/.test(url.pathname))
-    throw new Error('右侧职位详情尚未完整加载，请选中职位稍后重试，或使用“读取选中的职位文字”');
+  if (roots.length || /job-recommend/.test(url.pathname)) {
+    const loading = roots.some(
+      (root) =>
+        elements(root, '[aria-busy="true"],[role="progressbar"],.loading,.is-loading,.skeleton')
+          .length > 0,
+    );
+    throw new Error(
+      loading
+        ? '右侧职位详情尚未完整加载，请选中职位稍后重试'
+        : '当前职位页面布局暂未识别，请使用“读取选中的职位文字”或在工作台粘贴职位',
+    );
+  }
   const targets = listTargets(document, href);
   const observations = targets.slice(0, 20).flatMap((t) => {
     if (!t.platform_job_id) return [];

@@ -319,6 +319,16 @@ describe('bounded batch reading controls', () => {
 });
 
 describe('automatic connection entry', () => {
+  it('keeps a new connection code accessible when a saved workbench is offline', async () => {
+    sendMessage.mockImplementation(async (message: { type: string }) =>
+      message.type === 'STATUS' ? { state: 'offline', connected: false, paired: true } : idleBatch,
+    );
+    await load();
+    expect(document.getElementById('pair')?.hidden).toBe(false);
+    expect(document.getElementById('pair-code')).toBeTruthy();
+    expect(document.getElementById('connection')?.textContent).toBe('工作台离线');
+    expect(button('disconnect').hidden).toBe(false);
+  });
   it('provides manual pairing as a fallback and does not claim success when discovery fails', async () => {
     sendMessage.mockImplementation(async (message: { type: string }) =>
       message.type === 'STATUS'
@@ -335,5 +345,41 @@ describe('automatic connection entry', () => {
     expect(document.getElementById('connection')?.textContent).toBe('尚未连接');
     expect(document.getElementById('status')?.textContent).toContain('尚未找到工作台');
     expect(document.getElementById('pair')?.hidden).toBe(false);
+  });
+});
+
+describe('recruiting page location', () => {
+  it('offers explicit choices for multiple open lists and retries only the selected tab', async () => {
+    sendMessage.mockImplementation(async (message: { type: string; tabId?: number }) => {
+      if (message.type === 'STATUS') return health;
+      if (message.type === 'BATCH_STATUS') return idleBatch;
+      if (message.type === 'READ' && message.tabId !== 42)
+        return {
+          error: '请选择页面',
+          code: 'NEEDS_SELECTION',
+          choices: [{ kind: 'tab', tabId: 42, title: '合成运维职位列表' }],
+        };
+      return { observations: [observation] };
+    });
+    await load();
+    button('read').click();
+    await settle();
+    expect(document.getElementById('page-choices')?.textContent).toContain('合成运维职位列表');
+    expect(button('save').disabled).toBe(true);
+    (document.querySelector('#page-choices button') as HTMLButtonElement).click();
+    await settle();
+    expect(sendMessage).toHaveBeenCalledWith({ type: 'READ', tabId: 42 });
+    expect(document.getElementById('page-choices')?.textContent).toBe('');
+    expect(button('save').disabled).toBe(false);
+  });
+
+  it('locates a batch list without automatically starting a batch', async () => {
+    await load();
+    button('batch-tab').click();
+    button('locate-page').click();
+    await settle();
+    expect(sendMessage).toHaveBeenCalledWith({ type: 'LOCATE_JOB_PAGE', purpose: 'batch' });
+    expect(sendMessage.mock.calls.some(([message]) => message.type === 'BATCH_START')).toBe(false);
+    expect(document.getElementById('status')?.textContent).toContain('已定位招聘页面');
   });
 });

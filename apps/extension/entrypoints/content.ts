@@ -5,8 +5,15 @@ import {
   nextPageTarget,
   observe,
   observeSelection,
+  visible,
+  diagnosePage,
 } from '../lib/observe';
 import { createBatchReader, type BatchStep } from '../lib/batch';
+import {
+  classifyRecruitingPage,
+  observedRecruitingEntrypoints,
+  type RecruitingPageStatus,
+} from '../lib/navigation';
 
 export default defineContentScript({
   matches: [
@@ -30,6 +37,31 @@ export default defineContentScript({
         !sender.url?.startsWith(`chrome-extension://${browser.runtime.id}/`)
       )
         return;
+      if (message?.type === 'PAGE_STATUS') {
+        const page = classifyRecruitingPage(location.href);
+        const result: RecruitingPageStatus = {
+          page,
+          entries: observedRecruitingEntrypoints(
+            location.href,
+            Array.from(document.querySelectorAll<HTMLAnchorElement>('a[href]'))
+              .filter(visible)
+              .map((link) => ({ href: link.getAttribute('href')!, text: link.textContent ?? '' })),
+          ),
+          canRead: false,
+          listCount: 0,
+        };
+        if (page.kind === 'list' || page.kind === 'detail') {
+          try {
+            result.listCount = listTargets(document, location.href).length;
+            result.canRead = observe(document, location.href).length > 0;
+          } catch (error) {
+            result.message = error instanceof Error ? error.message : '职位详情尚未就绪';
+            result.diagnostics = diagnosePage(document, location.href);
+          }
+        }
+        sendResponse(result);
+        return;
+      }
       if (message?.type === 'BATCH_STEP') {
         void batch
           .step(message as BatchStep)
@@ -57,9 +89,15 @@ export default defineContentScript({
           message.type === 'COLLECT_SELECTION'
             ? observeSelection(document, location.href, window.getSelection()?.toString() ?? '')
             : observe(document, location.href);
-        sendResponse({ observations });
+        sendResponse({
+          observations,
+          source: { href: location.href, platform: classifyRecruitingPage(location.href).platform },
+        });
       } catch (error) {
-        sendResponse({ error: error instanceof Error ? error.message : '读取失败' });
+        sendResponse({
+          error: error instanceof Error ? error.message : '读取失败',
+          diagnostics: diagnosePage(document, location.href),
+        });
       }
     });
   },

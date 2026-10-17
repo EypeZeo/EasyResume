@@ -400,3 +400,17 @@ footer {
     transition: none;
   }
 }
+
+.page-choices {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0;
+}
+.page-choices:empty {
+  display: none;
+}
+.page-choices button {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
+}

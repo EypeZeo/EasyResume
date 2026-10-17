@@ -175,6 +175,37 @@ describe('background connection and cancellation boundary', () => {
     expect(data.autoPairDisabled).toBe(true);
   });
 
+  it('checks the new connection instead of reusing a check from before pairing', async () => {
+    data = {};
+    const oldCheck = deferred<any>();
+    mocks.reconnect.mockReturnValueOnce(oldCheck.promise);
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          protocol: 1,
+          token: connection.token,
+          installation_id: connection.installation,
+        }),
+      ),
+    );
+    await load();
+    const earlier = send({ type: 'STATUS' });
+    await settle();
+    expect(
+      (
+        await send({
+          type: 'PAIR',
+          info: JSON.stringify({ base: connection.base, code: 'synthetic-code', protocol: 1 }),
+        })
+      ).connected,
+    ).toBe(true);
+    const current = await send({ type: 'STATUS' });
+    expect(current.connected).toBe(true);
+    oldCheck.resolve({ state: 'unpaired' });
+    expect((await earlier).state).toBe('unpaired');
+    expect((await send({ type: 'STATUS' })).connected).toBe(true);
+  });
+
   it('does not save a late batch observation after pausing during connection validation', async () => {
     const step = deferred<any>();
     const checking = deferred<any>();
@@ -189,11 +220,13 @@ describe('background connection and cancellation boundary', () => {
       canNextPage: false,
     };
     mocks.sendMessage.mockImplementation(async (_tab, message) =>
-      message.type === 'BATCH_PREPARE'
-        ? { ...snapshot, taskId: message.taskId }
-        : message.type === 'BATCH_STEP'
-          ? step.promise
-          : { stopped: true },
+      message.type === 'PAGE_STATUS'
+        ? { page: { platform: 'boss', kind: 'list' }, entries: [], canRead: true, listCount: 1 }
+        : message.type === 'BATCH_PREPARE'
+          ? { ...snapshot, taskId: message.taskId }
+          : message.type === 'BATCH_STEP'
+            ? step.promise
+            : { stopped: true },
     );
     mocks.reconnect
       .mockResolvedValueOnce({ state: 'connected', connection })

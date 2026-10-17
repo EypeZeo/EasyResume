@@ -1,5 +1,5 @@
 {
-  "name": "@easyresume/extension", "version": "0.2.0-beta.3", "private": true, "type": "module",
+  "name": "@easyresume/extension", "version": "0.2.0-beta.4", "private": true, "type": "module",
   "scripts": {"dev": "wxt", "build": "wxt build", "typecheck": "wxt prepare && tsc --noEmit", "test": "vitest run", "postinstall": "wxt prepare"},
   "devDependencies": {"wxt": "^0.20.0", "typescript": "^5.9.0", "vitest": "^3.2.0", "happy-dom": "^20.0.0"}
 }

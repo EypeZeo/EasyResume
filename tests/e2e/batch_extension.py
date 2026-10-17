@@ -21,7 +21,7 @@ from uuid import uuid4
 
 import httpx
 import psutil
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 
 ROOT = Path(__file__).resolve().parents[2]
 EXTENSION = ROOT / "apps/extension/.output/chrome-mv3"
@@ -268,6 +268,19 @@ def main():
                 site.wait_for_timeout(300)
                 current = send(popup, {"type": "READ"})
                 assert current["observations"][0]["title"] == f"合成{platform}岗位1-1", current
+                # A normal workbench button grants no activeTab permission to the recruiting tab.
+                # Exercise the deployed UI/bridge, not a temporary extension-action grant.
+                workbench = context.new_page()
+                workbench.goto(base)
+                workbench.get_by_role("button", name="设置与连接", exact=True).click()
+                workbench.get_by_role("combobox", name="招聘网站").select_option(
+                    "boss" if platform == "boss" else "zhilian"
+                )
+                workbench.get_by_role("button", name="读取浏览器当前职位", exact=True).click()
+                expect(workbench.get_by_text(f"合成{platform}岗位1-1", exact=True)).to_be_visible(timeout=20000)
+                expect(workbench.get_by_role("button", name="保存读取的职位", exact=True)).to_be_enabled()
+                workbench.close()
+                site.bring_to_front()
                 content_cannot_read_credentials(context, site, extension_id)
                 started = send(popup, {"type": "BATCH_START", "maxJobs": 4, "maxPages": 2, "autoPage": True})
                 assert started["status"] == "running", started
@@ -333,6 +346,7 @@ def main():
                     "isolated backend and browser profile",
                     "real MV3 service worker",
                     "automatic workbench bridge",
+                    "workbench UI reading without a temporary activeTab grant",
                     "BOSS and Zhaopin split-pane extraction",
                     "delayed detail body",
                     "SPA next page and verified Zhaopin list scroll append",

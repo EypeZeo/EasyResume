@@ -3,6 +3,7 @@ import { ArrowDownToLine, Upload } from 'lucide-react';
 import { download, post, request } from './api';
 import { AiSettings } from './AiAssist';
 import { useConnectionStatus } from './useConnectionStatus';
+import BrowserCollector from './BrowserCollector';
 
 export default function SettingsPage({
   state,
@@ -56,134 +57,138 @@ export default function SettingsPage({
         )}
       </nav>
       {tab === 'extension' && (
-        <section className="panel settings-content">
-          <h2>连接浏览器扩展</h2>
-          <details
-            className="connection-instructions"
-            open={!connectionStatus.ready || !connectionStatus.connections.length}
-          >
-            <summary>安装与连接步骤</summary>
-            <ol className="setup-steps">
-              <li>
-                打开 Chrome 或 Edge
-                的扩展管理页，启用开发者模式，选择“加载已解压的扩展程序”，打开安装包中的{' '}
-                <code>extension</code> 文件夹。
-              </li>
-              <li>保持此工作台打开，扩展会自动连接。没有连接时，可生成连接码作为备用。</li>
-              <li>
-                打开 BOSS 或智联职位页，在左侧选中职位，使用扩展读取右侧详情；也可主动开始批量读取。
-              </li>
-            </ol>
-          </details>
-          <p className="helper">批量读取可暂停或停止；翻页需在扩展中开启。</p>
-          <div className="action-row">
-            <button
-              className="button primary"
-              onClick={() =>
-                void run(async () => {
-                  setPair(await post('/pairing'));
-                  setNow(Date.now());
-                  setCopied(false);
-                })
-              }
+        <div className="settings-content">
+          <BrowserCollector onSaved={refresh} />
+          <section className="panel">
+            <h2>连接浏览器扩展</h2>
+            <details
+              className="connection-instructions"
+              open={!connectionStatus.ready || !connectionStatus.connections.length}
             >
-              {pair && !seconds ? '重新生成连接码' : '生成连接码'}
-            </button>
-            {pair && (
+              <summary>安装与连接步骤</summary>
+              <ol className="setup-steps">
+                <li>
+                  打开 Chrome 或 Edge
+                  的扩展管理页，启用开发者模式，选择“加载已解压的扩展程序”，打开安装包中的{' '}
+                  <code>extension</code> 文件夹。
+                </li>
+                <li>保持此工作台打开，扩展会自动连接。没有连接时，可生成连接码作为备用。</li>
+                <li>
+                  打开 BOSS
+                  或智联职位页，在左侧选中职位，使用扩展读取右侧详情；也可主动开始批量读取。
+                </li>
+              </ol>
+            </details>
+            <p className="helper">批量读取可暂停或停止；翻页需在扩展中开启。</p>
+            <div className="action-row">
               <button
-                className="button secondary"
-                disabled={!seconds || !connectionCode}
+                className="button primary"
                 onClick={() =>
                   void run(async () => {
-                    await navigator.clipboard.writeText(connectionCode);
-                    setCopied(true);
+                    setPair(await post('/pairing'));
+                    setNow(Date.now());
+                    setCopied(false);
                   })
                 }
               >
-                {copied ? '已复制连接码' : '复制连接码'}
+                {pair && !seconds ? '重新生成连接码' : '生成连接码'}
               </button>
-            )}
-          </div>
-          {pair && (
-            <div className="pair-box">
-              <label className="field">
-                连接码
-                <input
-                  className="connection-code"
-                  readOnly
-                  value={connectionCode || '请重新生成连接码'}
-                  onFocus={(event) => event.target.select()}
-                />
-              </label>
-              <p className="helper">
-                {seconds
-                  ? `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒后过期`
-                  : '连接码已过期，请重新生成。'}
-              </p>
-              <details>
-                <summary>手动填写连接信息</summary>
-                <p className="helper">
-                  下面的地址用于连接这台电脑上运行的 EasyResume，通常不需要修改。
-                </p>
+              {pair && (
+                <button
+                  className="button secondary"
+                  disabled={!seconds || !connectionCode}
+                  onClick={() =>
+                    void run(async () => {
+                      await navigator.clipboard.writeText(connectionCode);
+                      setCopied(true);
+                    })
+                  }
+                >
+                  {copied ? '已复制连接码' : '复制连接码'}
+                </button>
+              )}
+            </div>
+            {pair && (
+              <div className="pair-box">
                 <label className="field">
-                  工作台地址
-                  <input readOnly value={location.origin} onFocus={(e) => e.target.select()} />
-                </label>
-                <label className="field">
-                  一次性连接代码
+                  连接码
                   <input
+                    className="connection-code"
                     readOnly
-                    value={seconds ? pair.code : '已过期'}
-                    onFocus={(e) => e.target.select()}
+                    value={connectionCode || '请重新生成连接码'}
+                    onFocus={(event) => event.target.select()}
                   />
                 </label>
-              </details>
-            </div>
-          )}
-          <div className="panel-heading">
-            <h3>扩展连接</h3>
-            <button className="text-button" onClick={() => void connectionStatus.refresh(true)}>
-              检查连接
-            </button>
-          </div>
-          <p className="connection-notice" role="status" aria-live="polite">
-            {connectionStatus.notice}
-          </p>
-          <p className="helper">打开扩展后会自动更新状态；关闭扩展时可能休眠。</p>
-          {connectionStatus.serviceOffline ? (
-            <p className="muted">工作台暂时不可用，连接状态待确认。</p>
-          ) : !connectionStatus.ready ? (
-            <p className="muted">正在检查连接…</p>
-          ) : (
-            !connectionStatus.connections.length && <p className="muted">尚未连接扩展。</p>
-          )}
-          {connectionStatus.connections.map((connection) => (
-            <div className="record-row connection-row" key={connection.id}>
-              <div>
-                <strong>{connection.label}</strong>
-                <small>
-                  {connectionStatus.serviceOffline
-                    ? '状态待确认'
-                    : connection.state === 'connected'
-                      ? '已连接'
-                      : '未检测到扩展活动'}
-                </small>
+                <p className="helper">
+                  {seconds
+                    ? `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒后过期`
+                    : '连接码已过期，请重新生成。'}
+                </p>
+                <details>
+                  <summary>手动填写连接信息</summary>
+                  <p className="helper">
+                    下面的地址用于连接这台电脑上运行的 EasyResume，通常不需要修改。
+                  </p>
+                  <label className="field">
+                    工作台地址
+                    <input readOnly value={location.origin} onFocus={(e) => e.target.select()} />
+                  </label>
+                  <label className="field">
+                    一次性连接代码
+                    <input
+                      readOnly
+                      value={seconds ? pair.code : '已过期'}
+                      onFocus={(e) => e.target.select()}
+                    />
+                  </label>
+                </details>
               </div>
-              <button
-                className="text-button danger"
-                onClick={() =>
-                  void run(async () => {
-                    await request(`/connections/${connection.id}`, { method: 'DELETE' });
-                    await connectionStatus.refresh(true);
-                    await refresh();
-                  })
-                }
-              >
-                断开连接
+            )}
+            <div className="panel-heading">
+              <h3>扩展连接</h3>
+              <button className="text-button" onClick={() => void connectionStatus.refresh(true)}>
+                检查连接
               </button>
             </div>
-          ))}
-        </section>
+            <p className="connection-notice" role="status" aria-live="polite">
+              {connectionStatus.notice}
+            </p>
+            <p className="helper">打开扩展后会自动更新状态；关闭扩展时可能休眠。</p>
+            {connectionStatus.serviceOffline ? (
+              <p className="muted">工作台暂时不可用，连接状态待确认。</p>
+            ) : !connectionStatus.ready ? (
+              <p className="muted">正在检查连接…</p>
+            ) : (
+              !connectionStatus.connections.length && <p className="muted">尚未连接扩展。</p>
+            )}
+            {connectionStatus.connections.map((connection) => (
+              <div className="record-row connection-row" key={connection.id}>
+                <div>
+                  <strong>{connection.label}</strong>
+                  <small>
+                    {connectionStatus.serviceOffline
+                      ? '状态待确认'
+                      : connection.state === 'connected'
+                        ? '已连接'
+                        : '未检测到扩展活动'}
+                  </small>
+                </div>
+                <button
+                  className="text-button danger"
+                  onClick={() =>
+                    void run(async () => {
+                      await request(`/connections/${connection.id}`, { method: 'DELETE' });
+                      await connectionStatus.refresh(true);
+                      await refresh();
+                    })
+                  }
+                >
+                  断开连接
+                </button>
+              </div>
+            ))}
+          </section>
+        </div>
       )}
       {tab === 'data' && (
         <div className="settings-content">

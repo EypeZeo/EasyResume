@@ -1,6 +1,13 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest';
-import { listTargets, localServer, observe, observeSelection, loadMoreTarget } from './observe';
+import {
+  diagnosePage,
+  listTargets,
+  localServer,
+  observe,
+  observeSelection,
+  loadMoreTarget,
+} from './observe';
 
 describe('local-only pairing URL', () => {
   it('accepts only loopback root addresses', () => {
@@ -16,6 +23,61 @@ describe('local-only pairing URL', () => {
 });
 
 describe('split-pane job identity and text boundaries', () => {
+  it('prefers the dedicated title over its earlier title/salary container', () => {
+    document.title = '合成职位列表';
+    document.body.innerHTML = `<div class="job-list-box"><div class="job-card-wrapper active"><span class="job-name">合成系统运维</span><span class="company-name">合成公司</span><a href="/job_detail/current.html">职位详情</a></div></div><section class="job-detail-box"><div class="job-title"><span class="name">合成系统运维</span><span class="salary">8-12K</span></div><div class="company-name">合成公司</div><div class="job-sec-text">维护服务器和网络设备。</div></section>`;
+    const result = observe(document, 'https://www.zhipin.com/web/geek/jobs')[0];
+    expect(result.title).toBe('合成系统运维');
+    expect(result.platform_job_id).toBe('current');
+    expect(result.text).toContain('8-12K');
+  });
+  it('uses a title leaf supplied as the card root itself', () => {
+    document.title = '合成职位列表';
+    document.body.innerHTML =
+      '<a class="job-card-wrapper job-name" href="/job_detail/current.html">合成系统运维</a>';
+    const targets = listTargets(document, 'https://www.zhipin.com/web/geek/jobs');
+    expect(targets).toHaveLength(1);
+    expect(targets[0].title).toBe('合成系统运维');
+    expect(targets[0].platform_job_id).toBe('current');
+  });
+  it('removes a separately marked salary from a legacy title container', () => {
+    document.title = '合成职位列表';
+    document.body.innerHTML = `<section class="job-detail-box"><div class="job-title">当前运维职位<span class="job-salary">8-12K</span></div><div class="job-sec-text">维护服务器和网络设备。</div></section>`;
+    expect(observe(document, 'https://www.zhipin.com/web/geek/jobs')[0].title).toBe('当前运维职位');
+  });
+  it('allows related cards below an isolated detail without borrowing their title, company or ID', () => {
+    document.title = '合成职位列表';
+    document.body.innerHTML = `<aside class="job-list-box"><div class="job-card-wrapper"><span class="job-name">左侧其他职位</span><span class="company-name">左侧公司</span></div></aside><section class="job-detail-box"><h1 class="job-name">当前运维职位</h1><div class="job-sec-text">维护 Linux 系统，周末双休。</div><div class="related"><div class="job-card-wrapper"><a href="/job_detail/unrelated.html"><span class="job-name">推荐其他职位</span></a><span class="company-name">推荐其他公司</span></div></div></section>`;
+    const result = observe(document, 'https://www.zhipin.com/web/geek/jobs')[0];
+    expect(result.title).toBe('当前运维职位');
+    expect(result.company).toBe('');
+    expect(result.platform_job_id).toBe('');
+    expect(result.text).not.toMatch(/左侧|推荐其他/);
+  });
+  it('does not assign an unrelated detail link to the current observation', () => {
+    document.title = '合成职位列表';
+    document.body.innerHTML = `<section class="job-detail-box"><h1 class="job-name">当前职位</h1><div class="job-sec-text">维护服务器和数据库。</div><a href="/job_detail/unrelated.html">其他职位</a></section>`;
+    const result = observe(document, 'https://www.zhipin.com/web/geek/jobs')[0];
+    expect(result.platform_job_id).toBe('');
+    expect(result.url).toBe('https://www.zhipin.com/web/geek/jobs');
+  });
+  it('does not combine a left-list heading and an incomplete right description on a detail URL', () => {
+    document.title = '合成职位';
+    document.body.innerHTML = `<aside class="job-list-box"><h1>左侧职位列表标题</h1></aside><section class="job-detail-box"><div class="job-sec-text">右侧已经有描述，但没有当前职位标题。</div></section>`;
+    expect(() => observe(document, 'https://www.zhipin.com/job_detail/current.html')).toThrow(
+      '未找到',
+    );
+  });
+  it('distinguishes unsupported stable markup from an actual loading indicator', () => {
+    document.title = '合成职位列表';
+    document.body.innerHTML =
+      '<section class="job-detail-box"><div class="job-sec-text">已加载的描述，但没有支持的标题节点。</div></section>';
+    expect(() => observe(document, 'https://www.zhipin.com/web/geek/jobs')).toThrow('布局暂未识别');
+    document
+      .querySelector('.job-detail-box')!
+      .insertAdjacentHTML('beforeend', '<div role="progressbar">加载中</div>');
+    expect(() => observe(document, 'https://www.zhipin.com/web/geek/jobs')).toThrow('尚未完整加载');
+  });
   it('supports BOSS job-card-box and associates the current company by exact detail ID', () => {
     document.title = '合成BOSS分栏';
     document.body.innerHTML = `<ul class="job-list-container"><li class="job-card-box"><a href="/job_detail/current-id.html"><span class="job-name">合成运维</span></a><div class="company-name">合成对应公司</div><span class="job-salary">8-10K</span></li><li class="job-card-box"><a href="/job_detail/other-id.html"><span class="job-name">同列表其他职位</span></a><div class="company-name">不应误用的公司</div></li></ul><section class="job-detail-box"><h1 class="job-name">合成运维</h1><div class="job-sec-text">维护Linux服务器，周末双休。</div><a href="/job_detail/current-id.html">查看更多信息</a></section>`;
@@ -126,7 +188,7 @@ describe('synthetic BOSS DOM, not a real compatibility claim', () => {
     document.body.innerHTML =
       '<div class="job-card-wrapper"><span class="job-name">左侧职位</span></div><section class="job-detail-box"><div class="job-sec-text">右侧描述但没有标题</div></section>';
     expect(() => observe(document, 'https://www.zhipin.com/web/geek/job-recommend')).toThrow(
-      '选中',
+      '布局暂未识别',
     );
   });
   it('ignores a hidden previous detail when the recommendation page retains old DOM', () => {
@@ -159,5 +221,27 @@ describe('synthetic BOSS DOM, not a real compatibility claim', () => {
     expect(() => observeSelection(document, 'https://www.zhipin.com/', 'a'.repeat(30))).toThrow(
       '职位列表',
     );
+  });
+});
+
+describe('structure-only page diagnostics', () => {
+  it('reports selector coverage and heading structure without content or URL query values', () => {
+    document.title = '合成职位';
+    document.body.innerHTML = `<section class="job-detail-box"><h1 class="job-name">合成秘密职位</h1><div class="job-section"><h3>职位描述</h3><div class="job-sec-text">联系人：合成姓名 13800000000，email@example.test</div></div><a href="/job_detail/private.html?tracking=secret">查看更多信息</a></section>`;
+    const result = diagnosePage(
+      document,
+      'https://www.zhipin.com/web/geek/jobs?query=不应返回的检索词',
+    );
+    expect(result.pagePath).toBe('/web/geek/jobs');
+    expect(result.selectors['.job-sec-text']).toEqual({ total: 1, visible: 1 });
+    expect(result.descriptionHeadings[0].parent.className).toBe('job-section');
+    expect(result.titleNodes[0].tag).toBe('h1');
+    expect(JSON.stringify(result)).not.toMatch(
+      /合成秘密职位|合成姓名|13800000000|email@example|tracking|secret|不应返回|查看更多信息/,
+    );
+  });
+  it('does not inspect personal or unrelated pages', () => {
+    expect(() => diagnosePage(document, 'https://www.zhipin.com/web/geek/chat')).toThrow();
+    expect(() => diagnosePage(document, 'https://evil.example/web/geek/jobs')).toThrow();
   });
 });

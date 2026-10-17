@@ -10,6 +10,8 @@ let lastState = '';
 let installation = '';
 let checking = false;
 let noticeTimer: number | undefined;
+let currentActionId = '';
+let navigationOverride: { tabId?: number; entryUrl?: string } | undefined;
 type BatchStatus = {
   status: 'idle' | 'running' | 'paused' | 'completed' | 'stopped' | 'error';
   saved: number;
@@ -33,8 +35,34 @@ const element = <T extends HTMLElement = HTMLElement>(id: string) =>
 const value = (id: string) => element<HTMLInputElement>(id).value;
 
 async function send(message: object) {
-  const response = await browser.runtime.sendMessage(message);
+  const navigates = ['READ', 'BATCH_START', 'LOCATE_JOB_PAGE'].includes(
+    (message as { type?: string }).type ?? '',
+  );
+  const input = navigates && navigationOverride ? { ...message, ...navigationOverride } : message;
+  if (navigates) navigationOverride = undefined;
+  const response = await browser.runtime.sendMessage(input);
   if (!response) throw new Error('扩展后台未响应，请重新载入扩展后重试');
+  if (response.code === 'NEEDS_SELECTION' && Array.isArray(response.choices)) {
+    const retryId = currentActionId;
+    const choices = element('page-choices');
+    choices.replaceChildren();
+    const hint = document.createElement('p');
+    hint.textContent = '选择本次要读取的招聘页面：';
+    choices.append(hint);
+    for (const choice of response.choices) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'secondary';
+      button.textContent = choice.title || '招聘职位';
+      button.onclick = () => {
+        navigationOverride =
+          choice.kind === 'entry' ? { entryUrl: choice.entryUrl } : { tabId: choice.tabId };
+        choices.replaceChildren();
+        element<HTMLButtonElement>(retryId).click();
+      };
+      choices.append(button);
+    }
+  } else if (navigates && !response.error) element('page-choices').replaceChildren();
   if (response?.error) throw new Error(response.error);
   return response;
 }
@@ -53,10 +81,12 @@ function batchActive() {
 }
 function buttons() {
   const batchBusy = [...busy].some((key) => key.startsWith('batch-'));
-  const reading = busy.has('read') || busy.has('read-selection') || busy.has('save');
+  const reading =
+    busy.has('read') || busy.has('read-selection') || busy.has('save') || busy.has('locate-page');
   const active = reading || batchActive() || batchBusy;
   element<HTMLButtonElement>('read').disabled = !connected || active;
   element<HTMLButtonElement>('read-selection').disabled = !connected || active;
+  element<HTMLButtonElement>('locate-page').disabled = !connected || active;
   element<HTMLButtonElement>('save').disabled = !connected || active || observations.length === 0;
   element<HTMLButtonElement>('batch-start').disabled = !connected || active;
   element('batch-start').hidden = batchActive();
@@ -115,7 +145,7 @@ function connectionResult(result: {
   }
   lastState = result.state;
   installation = result.installation ?? '';
-  element('pair').hidden = connected || (result.state === 'offline' && result.paired === true);
+  element('pair').hidden = connected;
   element('disconnect').hidden = !result.paired;
   buttons();
 }
@@ -218,6 +248,7 @@ function action(id: string, task: () => Promise<void>) {
     if (busy.has(id)) return;
     const button = element<HTMLButtonElement>(id);
     busy.add(id);
+    currentActionId = id;
     button.disabled = true;
     buttons();
     try {
@@ -226,6 +257,7 @@ function action(id: string, task: () => Promise<void>) {
       notice(error instanceof Error ? error.message : '操作失败，请重试', true);
     } finally {
       busy.delete(id);
+      if (currentActionId === id) currentActionId = '';
       button.disabled = false;
       buttons();
     }
@@ -299,6 +331,15 @@ async function readCurrent(type: 'READ' | 'READ_SELECTION') {
 }
 action('read', () => readCurrent('READ'));
 action('read-selection', () => readCurrent('READ_SELECTION'));
+action('locate-page', async () => {
+  clearObservations();
+  notice('正在定位招聘页面…');
+  await send({
+    type: 'LOCATE_JOB_PAGE',
+    purpose: element('batch-panel').hidden ? 'current' : 'batch',
+  });
+  notice('已定位招聘页面，可以读取当前职位或开始批量读取。');
+});
 
 action('batch-start', async () => {
   const maxJobs = Number(value('max-jobs'));
