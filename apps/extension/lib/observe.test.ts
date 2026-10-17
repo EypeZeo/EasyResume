@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest';
-import { localServer, observe, observeSelection } from './observe';
+import { listTargets, localServer, observe, observeSelection, loadMoreTarget } from './observe';
 
 describe('local-only pairing URL', () => {
   it('accepts only loopback root addresses', () => {
@@ -12,6 +12,44 @@ describe('local-only pairing URL', () => {
       'http://user:secret@127.0.0.1',
     ])
       expect(() => localServer(url)).toThrow();
+  });
+});
+
+describe('split-pane job identity and text boundaries', () => {
+  it('supports BOSS job-card-box and associates the current company by exact detail ID', () => {
+    document.title = '合成BOSS分栏';
+    document.body.innerHTML = `<ul class="job-list-container"><li class="job-card-box"><a href="/job_detail/current-id.html"><span class="job-name">合成运维</span></a><div class="company-name">合成对应公司</div><span class="job-salary">8-10K</span></li><li class="job-card-box"><a href="/job_detail/other-id.html"><span class="job-name">同列表其他职位</span></a><div class="company-name">不应误用的公司</div></li></ul><section class="job-detail-box"><h1 class="job-name">合成运维</h1><div class="job-sec-text">维护Linux服务器，周末双休。</div><a href="/job_detail/current-id.html">查看更多信息</a></section>`;
+    const result = observe(document, 'https://www.zhipin.com/web/geek/jobs')[0];
+    expect(listTargets(document, 'https://www.zhipin.com/web/geek/jobs')).toHaveLength(2);
+    expect(result.company).toBe('合成对应公司');
+    expect(result.platform_job_id).toBe('current-id');
+    expect(result.text).not.toContain('同列表其他职位');
+  });
+  it('reads Zhilian right detail and its own stable job link, without list or HR text', () => {
+    document.title = '合成智联列表';
+    document.body.innerHTML = `<div class="job-split-layout__left"><div class="job-list-panel"><div class="job-card job-card--active"><div class="job-card__title-main">合成数据库运维</div><a class="job-card__company-name">合成乙公司</a></div><div class="job-card"><div class="job-card__title-main">左侧其他职位</div><a class="job-card__company-name">合成甲公司</a></div></div></div>
+      <div class="job-detail-modules"><h1 class="job-detail-summary__title"><span class="job-detail-summary__title-text">合成数据库运维</span><span class="job-detail-summary__salary">6000-7000元</span></h1><a class="job-detail-summary__company-name">合成乙公司</a><ul><li class="job-detail-summary__tag">郑州·金水区</li><li class="job-detail-summary__tag">本科</li></ul><div class="job-description__content">维护MySQL<br>周末双休</div><div class="job-detail-publisher-card">不应读取的HR姓名</div><a href="https://www.zhaopin.com/jobdetail/SYNTHETIC.htm?tracking=secret">查看更多职位信息</a></div>`;
+    const result = observe(document, 'https://www.zhaopin.com/jobs/?pageMode=recommend');
+    expect(result).toHaveLength(1);
+    expect(result[0].title).toBe('合成数据库运维');
+    expect(result[0].company).toBe('合成乙公司');
+    expect(result[0].platform_job_id).toBe('SYNTHETIC');
+    expect(result[0].city).toBe('郑州');
+    expect(result[0].text).toContain('维护MySQL\n周末双休');
+    expect(result[0].text).not.toMatch(/其他职位|HR姓名|secret/);
+    expect(listTargets(document, 'https://www.zhaopin.com/jobs/')).toHaveLength(2);
+    expect(loadMoreTarget(document, 'https://www.zhaopin.com/jobs/')?.textContent).toContain(
+      '左侧其他职位',
+    );
+  });
+  it('finds a BOSS right detail on /jobs without mixing another card or inventing salary digits', () => {
+    document.title = '合成BOSS';
+    document.body.innerHTML = `<aside class="job-list-box"><div class="job-card-wrapper"><a href="/job_detail/other.html"><span class="job-name">其他岗位</span></a></div></aside><section class="job-detail-box"><h1 class="job-name">合成系统运维</h1><span class="salary">\ue031-\ue039K</span><p class="company-name">合成公司</p><div class="job-sec-text">负责系统维护<br>本科及以上</div><a href="/job_detail/current.html">查看更多信息</a></section>`;
+    const result = observe(document, 'https://www.zhipin.com/web/geek/jobs?city=101180100')[0];
+    expect(result.title).toBe('合成系统运维');
+    expect(result.platform_job_id).toBe('current');
+    expect(result.text).toContain('薪资采用特殊字体，待核对');
+    expect(result.text).not.toMatch(/[\uE000-\uF8FF]|其他岗位/);
   });
 });
 

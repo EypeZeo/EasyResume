@@ -1,5 +1,6 @@
 import csv
 import hashlib
+import hmac
 import io
 import json
 import secrets
@@ -15,6 +16,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -64,6 +66,11 @@ def _observation_timestamp(value: str) -> float:
         return (parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed).timestamp()
     except (ValueError, TypeError):
         return 0
+
+
+class ConnectionProbeInput(BaseModel):
+    installation_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,128}$")
+    challenge: str = Field(pattern=r"^[a-f0-9]{64}$")
 
 
 def create_app(data_dir: Path, *, development=False, static_dir: Path | None = None) -> FastAPI:
@@ -123,6 +130,7 @@ def create_app(data_dir: Path, *, development=False, static_dir: Path | None = N
             "/api/v1/observations",
             "/api/v1/health",
             "/api/v1/connection",
+            "/api/v1/connection/probe",
         }
         if origin and not local_origin and not (extension_origin and extension_route):
             return JSONResponse({"detail": "请求来源不受信任"}, status_code=403)
@@ -172,6 +180,24 @@ def create_app(data_dir: Path, *, development=False, static_dir: Path | None = N
         return auth
 
     install_ai(app, sessions, workbench)
+
+    @app.post("/api/v1/connection/probe")
+    def connection_probe(body: ConnectionProbeInput, request: Request, session: Session = Depends(get_session)):
+        # Discovery must not send a Bearer credential to an unverified local port.
+        # Only the original credential database can prove possession of its digest.
+        credential = session.get(Credential, body.installation_id)
+        if not credential or credential.role != "reader":
+            raise HTTPException(404, "未找到此连接")
+        status = "revoked" if credential.revoked else "active"
+        # Bind the proof to the actual listener, not a caller-supplied Host header.
+        port = request.scope["server"][1]
+        origin = "http://127.0.0.1" + (f":{port}" if port != 80 else "")
+        message = f"EasyResume:1:{body.installation_id}:{body.challenge}:{epoch}:{status}:{origin}"
+        proof = hmac.new(credential.digest.encode(), message.encode(), hashlib.sha256).hexdigest()
+        return {
+            "name": "EasyResume", "protocol": 1, "installation_id": body.installation_id,
+            "challenge": body.challenge, "instance": epoch, "status": status, "origin": origin, "proof": proof,
+        }
 
     @app.get("/api/v1/connection")
     def connection(auth=Depends(authenticate)):
@@ -824,8 +850,13 @@ def create_app(data_dir: Path, *, development=False, static_dir: Path | None = N
         if body.protocol != 1:
             raise HTTPException(409, "协议版本不兼容")
         parsed_url = urlsplit(body.url)
-        if parsed_url.scheme != "https" or parsed_url.hostname not in {"www.zhipin.com", "zhipin.com"}:
-            raise HTTPException(422, "仅接受BOSS页面观察")
+        platforms = {"www.zhipin.com": "boss", "zhipin.com": "boss", "www.zhaopin.com": "zhaopin",
+                     "zhaopin.com": "zhaopin", "sou.zhaopin.com": "zhaopin", "jobs.zhaopin.com": "zhaopin"}
+        platform = platforms.get(parsed_url.hostname)
+        if parsed_url.scheme != "https" or not platform or parsed_url.username or parsed_url.password:
+            raise HTTPException(422, "仅接受 BOSS 或智联职位页面观察")
+        if any(part in parsed_url.path.lower() for part in ("/chat", "/passport", "/login", "/resume", "/user/")):
+            raise HTTPException(422, "不接受聊天、登录或个人资料页面")
         if body.blocked:
             raise HTTPException(409, "检测到验证或异常，请在平台处理后手动恢复")
         observation_id = digest(
@@ -865,12 +896,12 @@ def create_app(data_dir: Path, *, development=False, static_dir: Path | None = N
             title=redact(body.title),
             company=redact(body.company),
             city=body.city,
-            platform="boss",
+            platform=platform,
             source_url=safe_url(body.url),
             platform_job_id=body.platform_job_id,
         )
         key = (
-            digest({"platform": "boss", "platform_job_id": body.platform_job_id})
+            digest({"platform": platform, "platform_job_id": body.platform_job_id})
             if body.platform_job_id
             else digest({"observation": observation_id})
         )

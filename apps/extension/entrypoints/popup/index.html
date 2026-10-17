@@ -11,20 +11,26 @@
         <img class="mark" src="/logo.svg" width="38" height="38" alt="" />
         <div>
           <h1>EasyResume</h1>
-          <p>把合适的岗位带回工作台</p>
+          <p>BOSS · 智联职位助手</p>
         </div>
         <span id="connection" class="connection" role="status" aria-live="polite">检查连接</span>
       </header>
       <p id="connection-help" class="muted"></p>
       <section id="pair" class="card">
-        <label for="connection-info">工作台连接码</label>
-        <input
-          id="connection-info"
-          autocomplete="off"
-          spellcheck="false"
-          placeholder="粘贴工作台生成的连接码"
-        />
-        <button id="connect" class="primary">连接工作台</button>
+        <h2>连接工作台</h2>
+        <p class="muted">首次打开本机 EasyResume 可自动连接；主动断开后，请在此重新连接。</p>
+        <button id="auto-connect" class="primary">查找并连接工作台</button>
+        <details id="pair-code">
+          <summary>使用连接码</summary>
+          <label for="connection-info">工作台连接码</label>
+          <input
+            id="connection-info"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="00000-00000-00000-00000-00000"
+          />
+          <button id="connect" class="secondary">使用连接码连接</button>
+        </details>
         <details>
           <summary>连接地址与手动设置</summary>
           <p class="muted">地址用于找到这台电脑上的 EasyResume，通常无需更改。</p>
@@ -35,33 +41,103 @@
         </details>
       </section>
       <section id="connected" class="card" hidden>
-        <h2>当前招聘页面</h2>
-        <p class="muted">打开 BOSS 职位列表或详情，再读取当前内容。</p>
-        <button id="read" class="primary">读取当前职位页</button>
-        <button id="read-selection" class="text-button fallback">读取选中的职位文字</button>
-        <div id="preview" aria-label="读取的岗位"></div>
-        <details id="advanced-fields">
-          <summary>补充筛选信息（可选）</summary>
-          <label for="city">城市</label><input id="city" placeholder="如：上海" />
-          <div class="field-row">
-            <label
-              >用工类型<select id="employment">
-                <option value="unknown">未确认</option>
-                <option value="full_time">全职</option>
-                <option value="internship">实习</option>
-                <option value="part_time">兼职</option>
-              </select></label
+        <div class="mode-tabs" role="tablist" aria-label="读取方式">
+          <button
+            id="current-tab"
+            type="button"
+            role="tab"
+            aria-selected="true"
+            aria-controls="current-panel"
+          >
+            当前职位
+          </button>
+          <button
+            id="batch-tab"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="batch-panel"
+            tabindex="-1"
+          >
+            批量读取
+          </button>
+        </div>
+        <div id="current-panel" role="tabpanel" aria-labelledby="current-tab">
+          <p class="muted">在左侧选中职位，读取右侧详情。支持 BOSS 与智联。</p>
+          <button id="read" class="primary">读取当前职位</button>
+          <button id="read-selection" class="text-button fallback">读取选中的职位文字</button>
+          <div id="preview" aria-label="读取的岗位"></div>
+          <details id="advanced-fields">
+            <summary>补充筛选信息（可选）</summary>
+            <label for="city">城市</label><input id="city" placeholder="如：上海" />
+            <div class="field-row">
+              <label
+                >用工类型<select id="employment">
+                  <option value="unknown">未确认</option>
+                  <option value="full_time">全职</option>
+                  <option value="internship">实习</option>
+                  <option value="part_time">兼职</option>
+                </select></label
+              >
+              <label
+                >招聘对象<select id="recruitment">
+                  <option value="unknown">未确认</option>
+                  <option value="campus">校招</option>
+                  <option value="social">社招</option>
+                </select></label
+              >
+            </div>
+          </details>
+          <button id="save" class="secondary" disabled>保存到工作台</button>
+        </div>
+        <div id="batch-panel" role="tabpanel" aria-labelledby="batch-tab" hidden>
+          <p class="muted">逐个打开列表中的职位并保存详情。可随时暂停或停止。</p>
+          <div class="field-row batch-limits">
+            <label for="max-jobs"
+              >最多读取<input
+                id="max-jobs"
+                type="number"
+                min="1"
+                max="100"
+                step="1"
+                value="20"
+                aria-describedby="jobs-limit-hint"
+              /><span id="jobs-limit-hint" class="field-hint">条职位 · 上限 100</span></label
             >
-            <label
-              >招聘对象<select id="recruitment">
-                <option value="unknown">未确认</option>
-                <option value="campus">校招</option>
-                <option value="social">社招</option>
-              </select></label
+            <label for="max-pages"
+              >最多翻到<input
+                id="max-pages"
+                type="number"
+                min="1"
+                max="5"
+                step="1"
+                value="2"
+                disabled
+                aria-describedby="pages-limit-hint"
+              /><span id="pages-limit-hint" class="field-hint">页 · 上限 5</span></label
             >
           </div>
-        </details>
-        <button id="save" class="secondary" disabled>保存到工作台</button>
+          <label class="check-row"><input id="auto-page" type="checkbox" />自动翻页</label>
+          <p id="batch-scope" class="muted scope-hint">仅处理当前页，不自动翻页。</p>
+          <button id="batch-start" class="primary">开始批量读取</button>
+          <div id="batch-progress" class="batch-progress" hidden>
+            <div class="progress-heading">
+              <strong id="batch-state" role="status" aria-live="polite">未开始</strong
+              ><span id="batch-limit"></span>
+            </div>
+            <div class="batch-metrics" aria-label="批量读取进度">
+              <div><strong id="batch-saved">0</strong><span>已保存</span></div>
+              <div><strong id="batch-visited">0</strong><span>已检查</span></div>
+              <div><strong id="batch-pages">0</strong><span>页</span></div>
+            </div>
+            <p id="batch-message" role="status" aria-live="polite"></p>
+            <div class="batch-actions">
+              <button id="batch-pause" class="secondary" hidden>暂停</button>
+              <button id="batch-resume" class="secondary" hidden>继续读取</button>
+              <button id="batch-stop" class="stop-button" hidden>停止任务</button>
+            </div>
+          </div>
+        </div>
       </section>
       <p id="status" role="status" aria-live="polite"></p>
       <nav class="actions" aria-label="工作台操作">

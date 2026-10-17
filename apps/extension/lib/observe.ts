@@ -27,23 +27,16 @@ export function localServer(value: string): string {
   return url.origin;
 }
 
-function text(root: ParentNode, selectors: string): string {
-  return (
-    Array.from(root.querySelectorAll(selectors))
-      .find(visible)
-      ?.textContent?.trim()
-      .replace(/\s+/g, ' ') ?? ''
-  );
-}
-
-function redact(value: string): string {
-  return value
-    .replace(/(?<!\d)1[3-9]\d{9}(?!\d)/g, '[手机号已省略]')
-    .replace(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/g, '[邮箱已省略]')
-    .replace(/(?<!\d)\d{17}[\dXx](?!\d)/g, '[身份证号已省略]');
-}
-
-function visible(element: Element): boolean {
+export const RECRUITING_HOSTS = [
+  'www.zhipin.com',
+  'zhipin.com',
+  'www.zhaopin.com',
+  'zhaopin.com',
+  'sou.zhaopin.com',
+  'jobs.zhaopin.com',
+];
+const boss = (url: URL) => ['www.zhipin.com', 'zhipin.com'].includes(url.hostname);
+export function visible(element: Element): boolean {
   for (let node: Element | null = element; node; node = node.parentElement) {
     if (node.hasAttribute('hidden') || node.getAttribute('aria-hidden') === 'true') return false;
     const style = node.ownerDocument.defaultView?.getComputedStyle(node);
@@ -58,89 +51,268 @@ function visible(element: Element): boolean {
   return true;
 }
 
+function rawText(node: Node): string {
+  if (node.nodeType === 3) return node.textContent ?? '';
+  if (!(node instanceof node.ownerDocument!.defaultView!.Element)) return '';
+  if (!visible(node) || node.matches('script,style,button,iframe')) return '';
+  if (node.tagName === 'BR') return '\n';
+  const value = Array.from(node.childNodes).map(rawText).join('');
+  return /^(DIV|P|LI|SECTION|H[1-6])$/.test(node.tagName) ? `\n${value}\n` : value;
+}
+
+function text(root: ParentNode, selectors: string, lines = false): string {
+  const element = Array.from(root.querySelectorAll(selectors)).find(visible);
+  if (!element) return '';
+  const value = rawText(element).trim();
+  return lines
+    ? value.replace(/[\t ]+/g, ' ').replace(/\n\s*\n/g, '\n')
+    : value.replace(/\s+/g, ' ');
+}
+
+function redact(value: string): string {
+  return value
+    .replace(/(?<!\d)1[3-9]\d{9}(?!\d)/g, '[手机号已省略]')
+    .replace(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/g, '[邮箱已省略]')
+    .replace(/(?<!\d)\d{17}[\dXx](?!\d)/g, '[身份证号已省略]');
+}
+
 function allowedPage(document: Document, href: string): URL {
   const url = new URL(href);
-  if (url.protocol !== 'https:' || !['www.zhipin.com', 'zhipin.com'].includes(url.hostname))
-    throw new Error('仅支持当前BOSS职位页');
-  if (/\/web\/geek\/chat|\/web\/passport(?:\/|$)|\/user\/|\/login/.test(url.pathname))
+  if (
+    url.protocol !== 'https:' ||
+    !RECRUITING_HOSTS.includes(url.hostname) ||
+    url.username ||
+    url.password
+  )
+    throw new Error('仅支持当前 BOSS 或智联招聘职位页');
+  if (
+    /\/chat(?:\/|$)|\/passport(?:\/|$)|\/user(?:\/|$)|\/login|\/resume(?:\/|$)/i.test(url.pathname)
+  )
     throw new Error('不读取聊天、登录或个人资料页面');
-  const visibleChallenge = Array.from(
+  const challenge = Array.from(
     document.querySelectorAll('[class*="captcha"], #captcha, [class*="geetest"]'),
   ).some(
-    (element) =>
-      visible(element) &&
-      (!!element.textContent?.trim() || !!element.querySelector('iframe, canvas, input, img')),
+    (e) => visible(e) && (!!e.textContent?.trim() || !!e.querySelector('iframe,canvas,input,img')),
   );
-  const warnings = Array.from(
-    document.querySelectorAll('[role="alert"], .verify-page, .error-page'),
-  )
+  const warnings = Array.from(document.querySelectorAll('[role="alert"],.verify-page,.error-page'))
     .filter(visible)
-    .map((element) => element.textContent?.slice(0, 300) ?? '')
+    .map((e) => e.textContent?.slice(0, 300))
     .join(' ');
-  if (visibleChallenge || /请完成验证|安全验证|访问异常|账号异常/.test(document.title + warnings))
+  if (challenge || /请完成验证|安全验证|访问异常|账号异常|操作频繁/.test(document.title + warnings))
     throw new Error('检测到验证或异常，请处理后手动重试');
+  const isJob = boss(url)
+    ? /\/job_detail\/|^\/web\/geek\/jobs?(?:[-/]|$)/.test(url.pathname)
+    : /\/jobs(?:\/|$)|\/jobdetail\/|\/recommend(?:\/|$)/.test(url.pathname) ||
+      url.hostname === 'jobs.zhaopin.com' ||
+      url.hostname === 'sou.zhaopin.com';
+  if (!isJob) throw new Error('请打开职位列表或详情页');
   return url;
 }
 
-function detailObservation(root: ParentNode, url: URL): Observation | undefined {
-  const title = text(root, '.job-name, .name h1, .job-title h1, h1, .job-title');
-  const description = text(root, '.job-sec-text, .job-detail-section .text, .job-description');
-  if (!title || !description) return;
-  const company = text(
-    root,
-    '.sider-company .company-info a, .sider-company .company-name, .company-name, .company-info a',
+function jobId(url: URL): string {
+  return (
+    url.pathname.match(/\/(?:job_detail|jobdetail)\/([^/.]+)/)?.[1] ??
+    (url.hostname === 'jobs.zhaopin.com'
+      ? (url.pathname.match(/^\/([^/.]+)\.htm[l]?$/)?.[1] ?? '')
+      : '')
   );
-  const parts = [
-    title,
-    text(root, '.salary, .job-salary'),
-    text(root, '.job-banner .info-primary p, .job-info'),
-    description,
-    text(root, '.job-tags, .tag-list'),
-  ];
+}
+
+function detailLink(root: ParentNode, url: URL): URL | undefined {
+  for (const a of root.querySelectorAll<HTMLAnchorElement>(
+    'a[href*="/job_detail/"],a[href*="/jobdetail/"],a[href*="jobs.zhaopin.com/"]',
+  )) {
+    const target = new URL(a.getAttribute('href')!, url);
+    if (
+      visible(a) &&
+      RECRUITING_HOSTS.includes(target.hostname) &&
+      boss(url) === boss(target) &&
+      target.protocol === 'https:' &&
+      !target.username &&
+      !target.password &&
+      jobId(target)
+    )
+      return target;
+  }
+}
+
+const BOSS_ROOTS =
+  '.job-detail-box,.job-detail-container,.job-detail-content,.detail-content,.job-detail';
+const BOSS_TITLE = '.job-title .name,.job-name,.name h1,.job-title h1,h1,.job-title';
+const BOSS_DESCRIPTION = '.job-sec-text,.job-detail-section .text,.job-description';
+const base = {
+  protocol: 1 as const,
+  city: '',
+  employment_type: 'unknown' as const,
+  recruitment_type: 'unknown' as const,
+  blocked: false,
+};
+
+export type ReadTarget = {
+  key: string;
+  title: string;
+  company: string;
+  platform_job_id: string;
+  element: HTMLElement;
+};
+export function listTargets(document: Document, href: string): ReadTarget[] {
+  const url = allowedPage(document, href);
+  const selector = boss(url)
+    ? 'li.job-card-box,.job-card-wrapper,.job-list-box .job-card-body'
+    : '.job-card';
+  const cards = Array.from(document.querySelectorAll<HTMLElement>(selector)).filter(visible);
+  return cards
+    .filter((card) => !cards.some((other) => other !== card && other.contains(card)))
+    .flatMap((card) => {
+      const title = text(
+        card,
+        boss(url) ? '.job-name,.job-title' : '.job-card__title-clamp,.job-card__title-main',
+      );
+      if (!title) return [];
+      const company = text(card, boss(url) ? '.company-name' : '.job-card__company-name');
+      const link = detailLink(card, url);
+      const location = text(
+        card,
+        boss(url) ? '.company-location,.job-area' : '.job-card__location',
+      );
+      return [
+        {
+          key: link?.href.split('?')[0] ?? `${title}\u001f${company}\u001f${location}`,
+          title,
+          company,
+          platform_job_id: link ? jobId(link) : '',
+          element: card,
+        },
+      ];
+    });
+}
+
+/** Only observed pagination widgets; never a generic link/button text search. */
+export function nextPageTarget(document: Document, href: string): HTMLElement | undefined {
+  allowedPage(document, href);
+  return Array.from(
+    document.querySelectorAll<HTMLElement>(
+      '.options-pages a.next,.page-next,.pagination-next,.pagination .next,.s-pagination__next,.pagination [aria-label="下一页"],.pagination button[aria-label="Next page"]',
+    ),
+  ).find(
+    (e) =>
+      visible(e) &&
+      !e.matches('[disabled],[aria-disabled="true"],.disabled,.is-disabled') &&
+      !e.closest('[aria-disabled="true"],.disabled,.is-disabled') &&
+      !e.closest('.job-detail-modules'),
+  );
+}
+
+/** Zhilian's observed split list appends another 20 cards when its bottom becomes visible. */
+export function loadMoreTarget(document: Document, href: string): HTMLElement | undefined {
+  const url = allowedPage(document, href);
+  if (boss(url)) return;
+  const panel = Array.from(
+    document.querySelectorAll('.job-split-layout__left .job-list-panel'),
+  ).find(visible);
+  if (
+    !panel ||
+    /没有更多|已全部加载|到底了/.test(panel.parentElement?.lastElementChild?.textContent ?? '')
+  )
+    return;
+  return Array.from(panel.querySelectorAll<HTMLElement>(':scope > .job-card'))
+    .filter(visible)
+    .at(-1);
+}
+
+function detailObservation(
+  root: ParentNode,
+  url: URL,
+  document: Document,
+): Observation | undefined {
+  const isBoss = boss(url);
+  const title = text(root, isBoss ? BOSS_TITLE : '.job-detail-summary__title-text');
+  const description = text(root, isBoss ? BOSS_DESCRIPTION : '.job-description__content', true);
+  if (!title || !description) return;
+  let company = text(
+    root,
+    isBoss
+      ? '.sider-company .company-info a,.sider-company .company-name,.company-name,.company-info a'
+      : '.job-detail-summary__company-name',
+  );
+  let target = detailLink(root, url) ?? url;
+  // A selected card can supply its company/link only after title identity is checked.
+  const targets = listTargets(document, url.href);
+  const matched = jobId(target)
+    ? targets.filter(
+        (t) =>
+          t.platform_job_id === jobId(target) &&
+          t.title.replace(/\s/g, '') === title.replace(/\s/g, ''),
+      )
+    : [];
+  if (!company && matched.length === 1) company = matched[0].company;
+  const selected = targets.filter(
+    (t) =>
+      t.element.matches('.active,.selected,.is-active,.job-card--active,.job-card-active') ||
+      t.element.getAttribute('aria-selected') === 'true',
+  );
+  if (
+    selected.length === 1 &&
+    (selected[0].title.replace(/\s/g, '') !== title.replace(/\s/g, '') ||
+      (company &&
+        selected[0].company &&
+        company.replace(/\s/g, '') !== selected[0].company.replace(/\s/g, '')))
+  )
+    throw new Error('左侧已切换职位，右侧详情仍在加载，请稍后重试');
+  if (selected.length === 1 && selected[0].title.replace(/\s/g, '') === title.replace(/\s/g, '')) {
+    if (!company) company = selected[0].company;
+    if (!jobId(target) && selected[0].platform_job_id) target = new URL(selected[0].key);
+  }
+  const salary = text(root, isBoss ? '.salary,.job-salary' : '.job-detail-summary__salary');
+  const renderedSalary = /[\uE000-\uF8FF]/.test(salary) ? '薪资采用特殊字体，待核对' : salary;
+  const requirements = isBoss
+    ? text(root, '.job-banner .info-primary p,.job-info,.job-limit', true)
+    : Array.from(root.querySelectorAll('.job-detail-summary__tag'))
+        .filter(visible)
+        .map((e) => e.textContent?.trim())
+        .filter(Boolean)
+        .join(' · ');
+  const city = isBoss
+    ? text(root, '.job-area,.job-location,.job-limit a')
+    : text(root, '.job-detail-summary__tag');
+  const tags = text(root, isBoss ? '.job-tags,.tag-list' : '.job-description__tags', true);
   return {
-    protocol: 1,
-    city: '',
-    employment_type: 'unknown',
-    recruitment_type: 'unknown',
-    blocked: false,
-    url: url.origin + url.pathname,
+    ...base,
+    city: redact(city.split(/[·\s]/)[0]).slice(0, 60),
+    url: target.origin + target.pathname,
     title: redact(title).slice(0, 160),
     company: redact(company).slice(0, 160),
-    text: redact(parts.filter(Boolean).join('\n')).slice(0, 20000),
-    platform_job_id: url.pathname.match(/\/job_detail\/([^/.]+)/)?.[1] ?? '',
+    text: redact(
+      [title, renderedSalary, requirements, description, tags].filter(Boolean).join('\n'),
+    ).slice(0, 20000),
+    platform_job_id: jobId(target),
     page_kind: 'detail',
   };
 }
 
-/** A user-selected excerpt is an explicit fallback, never a whole-page scrape. */
 export function observeSelection(
   document: Document,
   href: string,
   selection: string,
 ): Observation[] {
   const url = allowedPage(document, href);
-  if (!/\/job_detail\/|^\/web\/geek\/jobs?(?:[-/]|$)/.test(url.pathname))
-    throw new Error('请在职位列表或详情页选择职位文字');
   const excerpt = selection.trim();
   if (excerpt.length < 20)
     throw new Error('请先在招聘页选中职位标题和描述（至少 20 个字），再点此处读取');
   if (excerpt.length > 20000) throw new Error('所选文字太长，请只选择一个岗位的标题和描述');
-  const title = excerpt
-    .split(/[\r\n]/)
-    .find((line) => line.trim())!
-    .trim();
   return [
     {
-      protocol: 1,
-      city: '',
-      employment_type: 'unknown',
-      recruitment_type: 'unknown',
-      blocked: false,
+      ...base,
       url: url.origin + url.pathname,
-      title: redact(title).slice(0, 160),
+      title: redact(
+        excerpt
+          .split(/[\r\n]/)
+          .find((l) => l.trim())!
+          .trim(),
+      ).slice(0, 160),
       company: '',
       text: redact(excerpt),
-      platform_job_id: url.pathname.match(/\/job_detail\/([^/.]+)/)?.[1] ?? '',
+      platform_job_id: jobId(url),
       page_kind: 'unknown',
     },
   ];
@@ -148,61 +320,62 @@ export function observeSelection(
 
 export function observe(document: Document, href: string): Observation[] {
   const url = allowedPage(document, href);
-  const base = {
-    protocol: 1 as const,
-    city: '',
-    employment_type: 'unknown' as const,
-    recruitment_type: 'unknown' as const,
-    blocked: false,
-  };
-  if (/\/job_detail\//.test(url.pathname)) {
-    const detail = detailObservation(document, url);
-    if (!detail)
-      throw new Error('未找到可验证的职位标题或描述，可能页面已改版；请手动粘贴，不扩大读取范围');
-    return [detail];
-  }
-  if (/^\/web\/geek\/job-recommend(?:\/|$)/.test(url.pathname)) {
-    // Isolated, allowlisted detail containers only. Do not combine a left card with a right description.
-    // Logged-in recommendation DOM still requires separate real-platform validation.
-    for (const root of document.querySelectorAll(
-      '.job-detail-box, .job-detail-container, .job-detail-content',
-    )) {
-      if (!visible(root) || root.querySelector('.job-card-wrapper, .job-list-box')) continue;
-      const detail = detailObservation(root, url);
-      if (detail) return [detail];
+  const isBoss = boss(url);
+  const roots = Array.from(
+    document.querySelectorAll(isBoss ? BOSS_ROOTS : '.job-detail-modules'),
+  ).filter(visible);
+  if (isBoss)
+    for (const description of document.querySelectorAll(BOSS_DESCRIPTION)) {
+      if (!visible(description)) continue;
+      for (
+        let node = description.parentElement;
+        node && node !== document.body;
+        node = node.parentElement
+      ) {
+        if (node.querySelector('.job-card-box,.job-card-wrapper,.job-list-box,.job-card')) break;
+        if (node.querySelector(BOSS_TITLE)) {
+          if (!roots.includes(node)) roots.push(node);
+          break;
+        }
+      }
     }
-    throw new Error(
-      '未识别推荐页的当前职位详情。请在右侧选中标题和描述，使用“读取选中的职位文字”，或复制到工作台导入。',
-    );
+  for (const root of roots) {
+    if (root.querySelector('.job-card-box,.job-card-wrapper,.job-list-box,.job-card')) continue;
+    const observation = detailObservation(root, url, document);
+    if (observation) return [observation];
   }
-  const cards = Array.from(
-    document.querySelectorAll('.job-card-wrapper, .job-list-box .job-card-body'),
-  ).slice(0, 20);
-  const jobs = cards.flatMap((card) => {
-    const link = card.querySelector<HTMLAnchorElement>('a[href*="/job_detail/"]');
-    const title = text(card, '.job-name, .job-title');
-    if (!link || !title) return [];
-    const target = new URL(link.getAttribute('href')!, url.origin);
-    if (!['www.zhipin.com', 'zhipin.com'].includes(target.hostname)) return [];
-    const company = text(card, '.company-name');
-    const parts = [
-      title,
-      text(card, '.salary'),
-      text(card, '.tag-list'),
-      text(card, '.job-card-footer .info-desc, .job-card-footer .tag-list'),
-    ];
+  // On standalone detail pages the title and description share the document, not the list.
+  if (jobId(url)) {
+    const observation = detailObservation(document, url, document);
+    if (observation) return [observation];
+    throw new Error('未找到可验证的职位标题或描述，可能页面已改版；请手动粘贴');
+  }
+  if (roots.length || /job-recommend/.test(url.pathname))
+    throw new Error('右侧职位详情尚未完整加载，请选中职位稍后重试，或使用“读取选中的职位文字”');
+  const targets = listTargets(document, href);
+  const observations = targets.slice(0, 20).flatMap((t) => {
+    if (!t.platform_job_id) return [];
+    const salary = text(t.element, isBoss ? '.salary,.job-salary' : '.job-card__salary');
+    const content = [
+      t.title,
+      /[\uE000-\uF8FF]/.test(salary) ? '薪资采用特殊字体，待核对' : salary,
+      text(t.element, isBoss ? '.tag-list' : '.job-card__skill-tags'),
+    ]
+      .filter(Boolean)
+      .join('\n');
     return [
       {
         ...base,
-        url: target.origin + target.pathname,
-        title: redact(title).slice(0, 160),
-        company: redact(company).slice(0, 160),
-        text: redact(parts.filter(Boolean).join('\n')).slice(0, 20000),
-        platform_job_id: target.pathname.match(/\/job_detail\/([^/.]+)/)?.[1] ?? '',
+        url: t.key,
+        title: redact(t.title).slice(0, 160),
+        company: redact(t.company).slice(0, 160),
+        text: redact(content).slice(0, 20000),
+        platform_job_id: t.platform_job_id,
         page_kind: 'list' as const,
       },
     ];
   });
-  if (!jobs.length) throw new Error('当前页没有支持的职位卡片；请打开职位详情，或在工作台粘贴原文');
-  return jobs;
+  if (!observations.length)
+    throw new Error('当前页没有支持的职位卡片或右侧详情，请选中职位或在工作台粘贴原文');
+  return observations;
 }

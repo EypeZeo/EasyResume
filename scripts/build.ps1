@@ -1,6 +1,6 @@
 param(
     [ValidatePattern('^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$')]
-    [string]$ReleaseVersion = 'v0.2.0-beta.2'
+    [string]$ReleaseVersion = 'v0.2.0-beta.3'
 )
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath (Split-Path -Parent $PSScriptRoot)

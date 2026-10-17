@@ -4,7 +4,7 @@
 
 EasyResume helps you review your résumé, compare jobs, and prepare message drafts. The app currently uses Chinese; the actual button names are included below.
 
-**Local test build v0.2.0-beta.2:** If you have the local test folder, launch `本地验证/启动 EasyResume.cmd` after closing the older app window. Load the extension from the fixed `本地验证/extension` folder; after an update, reload it in the browser extension manager and refresh BOSS. The download links below still point to the published beta.1.
+**Local test build v0.2.0-beta.3:** If you have the local test folder, launch `本地验证/启动 EasyResume.cmd` after closing the older app window. Load the extension from the fixed `本地验证/extension` folder; after an update, reload it in the extension manager and refresh the workbench and recruiting pages. The download links below still point to the published beta.1. Automatic connection, Zhaopin, and batch reading are local beta.3 test features.
 
 ## 1. Download and start
 
@@ -56,15 +56,23 @@ Create greeting or clarification drafts in job details, then review them in **�
 
 ## 4. Optional browser extension
 
-The manual workflow works without it. BOSS reading is experimental; page changes can break extraction. Automatic sending is unavailable.
+The manual workflow works without it. These steps apply to local **beta.3**, which adds experimental BOSS / Zhaopin right-hand detail reading and user-started batch reading. The public beta.1 still uses a pairing code and contains the earlier BOSS prototype. Page changes can break extraction. Automatic sending is unavailable.
 
 1. Open `chrome://extensions` in Chrome or `edge://extensions` in Edge.
 2. Enable **Developer mode**, choose **Load unpacked**, and select the package's `extension` folder. For the separate extension ZIP, extract it and select the folder containing `manifest.json`.
-3. In the workbench, open **设置与连接 → 浏览器扩展**, then **生成连接码 → 复制连接码** (Generate / Copy connection information).
-4. In the extension, paste into **工作台连接码** and click **连接工作台** (Connect). Regenerate expired information.
-5. Log in to BOSS yourself, open a job page, and choose **读取当前职位页** (Read current job page). Review and click **保存到工作台** (Save). Refresh the page after installing if needed.
+3. Open the local EasyResume workbench in the browser where the extension is installed. It connects automatically on first use; refresh the workbench if it was already open. Open the extension and check for **已连接** (Connected).
+4. Log in to BOSS or Zhaopin yourself. Select a job in the left list and wait for its right-hand details. Choose **读取当前职位** (Read current job), check the title and company, then **保存到工作台** (Save). Refresh the recruiting page after installation if needed.
+5. To collect several jobs, select **批量读取** (Batch reading), set the limit, and click **开始批量读取** (Start). The default is at most 20 jobs on the current page. Paging requires explicitly selecting **自动翻页** (Automatic paging); the default is then 2 pages, with limits of 100 jobs / 5 pages. Use **暂停 / 继续读取 / 停止任务** (Pause / Resume / Stop) when needed.
 
-While open, the extension checks the connection every five seconds. “未检测到扩展活动” can mean the popup is closed, not that access was revoked. If disconnected, start the app; if expired, generate a new code. Codes contain five groups of five digits and expire in five minutes. Do not share them. If automatic reading fails, select one job’s title and description and use **读取选中的职位文字**; review the first-line title and company in the workbench. Logged-in BOSS recommendation pages still need real verification.
+While open, the extension checks its connection every five seconds and briefly reports changes. An existing pairing can discover a changed port and reconnect after verifying the same workbench. Start the app if it is offline. “未检测到扩展活动” may simply mean the popup is closed. After an explicit **断开连接** (Disconnect), it does not pair again automatically; click **查找并连接工作台** (Find and connect) to reconnect.
+
+If automatic connection fails, use **设置与连接 → 浏览器扩展 → 生成连接码 → 复制连接码** in the workbench, expand **使用连接码** in the extension, paste the five groups of digits, and choose **使用连接码连接**. Codes expire in five minutes, work once, and should not be shared. Beta.1 calls these “连接信息”.
+
+Paging uses only supported, recognizable next-page controls or adapted loading at the end of the job list. Each newly loaded batch counts as a page. It stops when no supported loading method is available; it never scrolls indefinitely or blindly. Batch reading changes the selected job in the recruiting tab. Keep that tab in the foreground and inspect any pause/error message before continuing.
+
+If reading fails, select one job’s title and description and use **读取选中的职位文字**. Check the first-line title and company in the workbench. **薪资采用特殊字体，待核对** means the salary font could not be read reliably; check the original page instead of treating salary as absent.
+
+A real Zhaopin page's DOM and loading from 20 to 40 list entries were independently observed. After selecting a second job, its right-hand details did not load. BOSS debugging returned to the homepage or lost the browser channel. Neither site's complete real read/save/batch workflow has passed acceptance.
 
 Website terms may restrict third-party tools. Stop on verification or account warnings and handle them on the website. See [platform validation](docs/PLATFORM_VALIDATION.md) for the tested scope.
 
@@ -93,7 +101,7 @@ Report [issues](https://github.com/EypeZeo/EasyResume/issues) with the version, 
 
 ## 7. Current scope and developer resources
 
-Available: local résumé/job organization, rules, optional AI suggestions, drafts, backups, and the experimental BOSS reader. Automatic sending, OCR, company verification, commute maps, 51job and Zhaopin collection are not supported. Real-site compatibility and real-résumé accuracy require separate validation.
+Available: local résumé/job organization, rules, optional AI suggestions, drafts, and backups. Local beta.3 adds experimental BOSS / Zhaopin read-only adapters and bounded batch reading; public beta.1 has an earlier scope. Automatic sending, OCR, company verification, commute maps, and 51job collection are unavailable. Complete real-site workflows and real-résumé accuracy require separate validation.
 
 [Development](docs/DEVELOPMENT.md) · [Design](docs/PLAN.md) · [Validation](docs/STATUS.md) · [Third-party notices](THIRD_PARTY_NOTICES.md)
 

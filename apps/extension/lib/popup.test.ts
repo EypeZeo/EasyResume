@@ -23,7 +23,17 @@ const observation = {
   text: '合成说明',
   url: 'https://www.zhipin.com/job_detail/synthetic.html',
 };
+const idleBatch = {
+  status: 'idle',
+  saved: 0,
+  visited: 0,
+  pages: 0,
+  maxJobs: 20,
+  maxPages: 1,
+  message: '',
+};
 const button = (id: string) => document.getElementById(id) as HTMLButtonElement;
+const input = (id: string) => document.getElementById(id) as HTMLInputElement;
 const settle = async () => {
   for (let i = 0; i < 12; i++) await Promise.resolve();
 };
@@ -37,7 +47,11 @@ beforeEach(() => {
   vi.useFakeTimers();
   sendMessage.mockReset();
   sendMessage.mockImplementation(async (message: { type: string }) =>
-    message.type === 'STATUS' ? health : { observations: [observation] },
+    message.type === 'STATUS'
+      ? health
+      : message.type === 'BATCH_STATUS'
+        ? idleBatch
+        : { observations: [observation] },
   );
   document.body.innerHTML = markup
     .match(/<body[^>]*>([\s\S]*?)<\/body>/i)![1]
@@ -60,6 +74,9 @@ describe('compact extension workflow', () => {
     const feedback = document.getElementById('status')?.textContent;
     await vi.advanceTimersByTimeAsync(5000);
     expect(sendMessage.mock.calls.filter(([message]) => message.type === 'STATUS')).toHaveLength(2);
+    expect(
+      sendMessage.mock.calls.filter(([message]) => message.type === 'BATCH_STATUS'),
+    ).toHaveLength(2);
     expect(document.getElementById('status')?.textContent).toBe(feedback);
     expect(button('save').disabled).toBe(false);
     expect(document.getElementById('advanced-fields')?.hasAttribute('open')).toBe(false);
@@ -77,6 +94,38 @@ describe('compact extension workflow', () => {
     expect(document.getElementById('preview')?.textContent).toBe('');
     expect(button('save').disabled).toBe(true);
     expect(document.getElementById('status')?.textContent).toContain('请打开支持的职位页面');
+  });
+  it('explains duplicate skips and preserves the extracted city without manual input', async () => {
+    sendMessage.mockImplementation(async (message: { type: string }) => {
+      if (message.type === 'STATUS') return health;
+      if (message.type === 'BATCH_STATUS') return idleBatch;
+      if (message.type === 'SAVE') return { saved: 0, duplicates: 1 };
+      return { observations: [{ ...observation, city: '合成城市' }] };
+    });
+    await load();
+    button('read').click();
+    await settle();
+    button('save').click();
+    await settle();
+    const saveMessage = sendMessage.mock.calls.find(([message]) => message.type === 'SAVE')?.[0];
+    expect(saveMessage.observations[0].city).toBe('合成城市');
+    expect(document.getElementById('status')?.textContent).toContain('已存在，已跳过');
+    expect(document.getElementById('status')?.textContent).not.toContain('已保存 0');
+    expect(button('save').disabled).toBe(true);
+  });
+  it('shows the salary verification hint when the source uses an unreadable special font', async () => {
+    sendMessage.mockImplementation(async (message: { type: string }) =>
+      message.type === 'STATUS'
+        ? health
+        : message.type === 'BATCH_STATUS'
+          ? idleBatch
+          : { observations: [{ ...observation, text: '薪资采用特殊字体，待核对\n合成职责' }] },
+    );
+    await load();
+    button('read').click();
+    await settle();
+    expect(document.querySelector('.preview-hint')?.textContent).toBe('薪资采用特殊字体，待核对');
+    expect(button('save').disabled).toBe(false);
   });
   it('invalidates observations when an automatic health check finds a revoked connection', async () => {
     await load();
@@ -98,14 +147,18 @@ describe('compact extension workflow', () => {
     sendMessage.mockImplementation((message: { type: string }) =>
       message.type === 'STATUS'
         ? Promise.resolve(health)
-        : new Promise((resolve) => {
-            finishRead = resolve;
-          }),
+        : message.type === 'BATCH_STATUS'
+          ? Promise.resolve(idleBatch)
+          : new Promise((resolve) => {
+              finishRead = resolve;
+            }),
     );
     await load();
     button('read').click();
     await settle();
-    sendMessage.mockResolvedValue({ ...health, installation: 'another-installation' });
+    sendMessage.mockImplementation(async (message: { type: string }) =>
+      message.type === 'STATUS' ? { ...health, installation: 'another-installation' } : idleBatch,
+    );
     await vi.advanceTimersByTimeAsync(5000);
     finishRead({ observations: [observation] });
     await settle();
@@ -125,5 +178,162 @@ describe('compact extension workflow', () => {
     expect(document.getElementById('status')?.textContent).toContain('无法确认撤销');
     await vi.advanceTimersByTimeAsync(5000);
     expect(document.getElementById('status')?.textContent).toContain('无法确认撤销');
+  });
+});
+
+describe('bounded batch reading controls', () => {
+  it('only starts after a user click and defaults to the current page', async () => {
+    let current = { ...idleBatch };
+    sendMessage.mockImplementation(
+      async (message: { type: string; maxJobs?: number; maxPages?: number }) => {
+        if (message.type === 'STATUS') return health;
+        if (message.type === 'BATCH_START') current = { ...current, status: 'running' };
+        return current;
+      },
+    );
+    await load();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(sendMessage.mock.calls.some(([message]) => message.type === 'BATCH_START')).toBe(false);
+    expect(input('auto-page').checked).toBe(false);
+    expect(input('max-pages').disabled).toBe(true);
+    button('batch-tab').click();
+    button('batch-start').click();
+    await settle();
+    expect(sendMessage).toHaveBeenCalledWith({
+      type: 'BATCH_START',
+      maxJobs: 20,
+      maxPages: 1,
+      autoPage: false,
+    });
+    expect(button('read').disabled).toBe(true);
+    expect(button('batch-pause').hidden).toBe(false);
+    expect(button('batch-stop').hidden).toBe(false);
+  });
+
+  it('requires an explicit opt-in for multiple pages and validates bounded integers', async () => {
+    await load();
+    button('batch-tab').click();
+    input('auto-page').click();
+    expect(input('max-pages').disabled).toBe(false);
+    input('max-jobs').value = '101';
+    button('batch-start').click();
+    await settle();
+    expect(sendMessage.mock.calls.some(([message]) => message.type === 'BATCH_START')).toBe(false);
+    expect(document.getElementById('status')?.textContent).toContain('1 到 100');
+    input('max-jobs').value = '20';
+    input('max-pages').value = '1.5';
+    button('batch-start').click();
+    await settle();
+    expect(sendMessage.mock.calls.some(([message]) => message.type === 'BATCH_START')).toBe(false);
+    input('max-pages').value = '2';
+    button('batch-start').click();
+    await settle();
+    expect(sendMessage).toHaveBeenCalledWith({
+      type: 'BATCH_START',
+      maxJobs: 20,
+      maxPages: 2,
+      autoPage: true,
+    });
+  });
+
+  it('restores actual background progress when opened during a running task', async () => {
+    sendMessage.mockImplementation(async (message: { type: string }) =>
+      message.type === 'STATUS'
+        ? health
+        : {
+            ...idleBatch,
+            status: 'running',
+            saved: 7,
+            visited: 9,
+            pages: 1,
+            message: '正在读取第 10 条',
+          },
+    );
+    await load();
+    expect(document.getElementById('batch-panel')?.hidden).toBe(false);
+    expect(button('batch-tab').getAttribute('aria-selected')).toBe('true');
+    expect(document.getElementById('batch-saved')?.textContent).toBe('7');
+    expect(document.getElementById('batch-message')?.textContent).toBe('正在读取第 10 条');
+    expect(input('max-jobs').disabled).toBe(true);
+    expect(button('save').disabled).toBe(true);
+    expect(button('batch-start').hidden).toBe(true);
+  });
+
+  it('keeps stop available after a paused task loses connection, and blocks resume', async () => {
+    let online = true;
+    let current = { ...idleBatch, status: 'running', saved: 3 };
+    sendMessage.mockImplementation(async (message: { type: string }) => {
+      if (message.type === 'STATUS')
+        return { ...health, state: online ? 'connected' : 'offline', connected: online };
+      if (message.type === 'BATCH_PAUSE') current = { ...current, status: 'paused' };
+      if (message.type === 'BATCH_STOP') current = { ...current, status: 'stopped' };
+      return current;
+    });
+    await load();
+    button('batch-pause').click();
+    await settle();
+    expect(button('batch-resume').hidden).toBe(false);
+    online = false;
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(button('batch-resume').disabled).toBe(true);
+    expect(button('batch-stop').disabled).toBe(false);
+    expect(document.getElementById('connected')?.hidden).toBe(false);
+    button('batch-stop').click();
+    await settle();
+    expect(sendMessage).toHaveBeenCalledWith({ type: 'BATCH_STOP' });
+    expect(document.getElementById('batch-state')?.textContent).toBe('已停止');
+  });
+
+  it('shows background failure details without claiming a successful batch', async () => {
+    sendMessage.mockImplementation(async (message: { type: string }) =>
+      message.type === 'STATUS'
+        ? health
+        : {
+            ...idleBatch,
+            status: 'error',
+            saved: 2,
+            visited: 4,
+            message: '页面变化，请重新选择职位后开始',
+          },
+    );
+    await load();
+    expect(document.getElementById('batch-state')?.textContent).toBe('需要处理');
+    expect(document.getElementById('batch-message')?.textContent).toContain('页面变化');
+    expect(document.getElementById('batch-saved')?.textContent).toBe('2');
+    expect(button('batch-start').hidden).toBe(false);
+    expect(button('batch-stop').hidden).toBe(true);
+  });
+
+  it('supports keyboard movement between the two reading modes', async () => {
+    await load();
+    button('current-tab').dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
+    );
+    expect(button('batch-tab').getAttribute('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(button('batch-tab'));
+    expect(document.getElementById('current-panel')?.hidden).toBe(true);
+    button('batch-tab').dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }));
+    expect(document.activeElement).toBe(button('current-tab'));
+    expect(document.getElementById('current-panel')?.hidden).toBe(false);
+  });
+});
+
+describe('automatic connection entry', () => {
+  it('provides manual pairing as a fallback and does not claim success when discovery fails', async () => {
+    sendMessage.mockImplementation(async (message: { type: string }) =>
+      message.type === 'STATUS'
+        ? { state: 'unpaired', connected: false, paired: false }
+        : message.type === 'BATCH_STATUS'
+          ? idleBatch
+          : { found: false },
+    );
+    await load();
+    expect(document.getElementById('pair-code')?.hasAttribute('open')).toBe(false);
+    button('auto-connect').click();
+    await settle();
+    expect(sendMessage).toHaveBeenCalledWith({ type: 'AUTO_CONNECT' });
+    expect(document.getElementById('connection')?.textContent).toBe('尚未连接');
+    expect(document.getElementById('status')?.textContent).toContain('尚未找到工作台');
+    expect(document.getElementById('pair')?.hidden).toBe(false);
   });
 });

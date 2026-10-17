@@ -42,6 +42,7 @@ import type { components } from './generated/api';
 import ResumeEditor from './ResumeEditor';
 import SettingsPage from './SettingsPage';
 import { useEntityDraft } from './useEntityDraft';
+import { useExtensionBridge } from './useExtensionBridge';
 type JobModel = Required<components['schemas']['Job']>;
 
 type Page = 'jobs' | 'profile' | 'strategy' | 'records' | 'settings';
@@ -469,6 +470,7 @@ export default function App() {
   const [status, setStatus] = useState('正在连接本地工作台…');
   const [error, setError] = useState('');
   const [online, setOnline] = useState(false);
+  useExtensionBridge(online);
   const [busy, setBusy] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [importText, setImportText] = useState('');

@@ -69,11 +69,13 @@ export default function SettingsPage({
                 的扩展管理页，启用开发者模式，选择“加载已解压的扩展程序”，打开安装包中的{' '}
                 <code>extension</code> 文件夹。
               </li>
-              <li>生成连接码，复制到扩展中连接。只需连接一次。</li>
-              <li>打开 BOSS 职位页，在扩展中读取岗位，回工作台检查。</li>
+              <li>保持此工作台打开，扩展会自动连接。没有连接时，可生成连接码作为备用。</li>
+              <li>
+                打开 BOSS 或智联职位页，在左侧选中职位，使用扩展读取右侧详情；也可主动开始批量读取。
+              </li>
             </ol>
           </details>
-          <p className="helper">扩展读取当前页面。自动发送尚未开放。</p>
+          <p className="helper">批量读取可暂停或停止；翻页需在扩展中开启。</p>
           <div className="action-row">
             <button
               className="button primary"

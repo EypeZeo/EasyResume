@@ -69,6 +69,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/connection/probe": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Connection Probe */
+        post: operations["connection_probe_api_v1_connection_probe_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/connection": {
         parameters: {
             query?: never;
@@ -747,6 +764,13 @@ export interface components {
         Body_profile_upload_api_v1_profiles_upload_post: {
             /** File */
             file: string;
+        };
+        /** ConnectionProbeInput */
+        ConnectionProbeInput: {
+            /** Installation Id */
+            installation_id: string;
+            /** Challenge */
+            challenge: string;
         };
         /** DraftEditInput */
         DraftEditInput: {
@@ -1555,6 +1579,39 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    connection_probe_api_v1_connection_probe_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConnectionProbeInput"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
