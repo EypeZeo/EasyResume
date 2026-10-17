@@ -86,6 +86,66 @@ function stableId(value: string): string {
   );
 }
 
+function explicitCityDistrict(value: string): [string, string] | undefined {
+  const parts = value
+    .trim()
+    .split(/[\s·•]+/)
+    .filter(Boolean);
+  if (parts.length < 2) return;
+  const pair: [string, string] = [parts[0], parts[1]];
+  if (
+    pair.some(
+      (part) =>
+        !/^[\u3400-\u9fff]{2,16}$/.test(part) ||
+        /^(不限|全市|全区|全县|全国|附近|周边|未知|待定|其他|市辖区|区县)$/.test(part),
+    )
+  )
+    return;
+  return pair;
+}
+
+function sameAdministrativePart(first: string, second: string, suffixes: string[]): boolean {
+  return (
+    first === second ||
+    suffixes.some((suffix) => first === second + suffix || second === first + suffix)
+  );
+}
+
+function rightPublicZhilianId(root: Element, href: string, title: string): string | undefined {
+  const ids = new Set<string>();
+  for (const anchor of root.querySelectorAll<HTMLAnchorElement>('a[href]')) {
+    if (!visible(anchor) || anchor.closest('.job-card')) continue;
+    const label = normalize(anchor.textContent ?? '');
+    const currentTitle =
+      label === normalize(title) &&
+      (anchor.matches('.job-detail-summary__title-text') ||
+        !!anchor.closest('.job-detail-summary__title-text') ||
+        !!anchor.querySelector('.job-detail-summary__title-text'));
+    if (!currentTitle && !/^查看更多(?:职位)?信息$/.test(label)) continue;
+    let url: URL;
+    try {
+      url = new URL(anchor.getAttribute('href')!, href);
+    } catch {
+      continue;
+    }
+    if (
+      url.protocol !== 'https:' ||
+      url.port ||
+      url.username ||
+      url.password ||
+      !['www.zhaopin.com', 'zhaopin.com', 'jobs.zhaopin.com'].includes(url.hostname)
+    )
+      continue;
+    const id =
+      url.pathname.match(/^\/jobdetail\/([^/.]+)(?:\.html?)?\/?$/i)?.[1] ??
+      (url.hostname === 'jobs.zhaopin.com'
+        ? url.pathname.match(/^\/([^/.]+)\.html?\/?$/i)?.[1]
+        : undefined);
+    if (id) ids.add(id);
+  }
+  return ids.size === 1 ? [...ids][0] : undefined;
+}
+
 /** Runs exactly one bounded DOM interaction. The background owns the loop and persistence. */
 export function createBatchReader(document: Document, href: () => string, adapter: BatchAdapter) {
   const documentId = crypto.randomUUID();
@@ -328,6 +388,92 @@ export function createBatchReader(document: Document, href: () => string, adapte
     lastClick = Date.now();
   }
 
+  function unambiguousZhilianDistrict(
+    target: BatchTarget,
+    observation: Observation,
+    observationId: string,
+  ): boolean {
+    if (
+      !['www.zhaopin.com', 'sou.zhaopin.com', 'jobs.zhaopin.com'].includes(
+        new URL(href()).hostname,
+      ) ||
+      !observationId ||
+      target.platform_job_id ||
+      stableId(target.key)
+    )
+      return false;
+    const panels = Array.from(
+      document.querySelectorAll('.job-split-layout__left .job-list-panel'),
+    ).filter(visible);
+    const roots = Array.from(document.querySelectorAll('.job-detail-modules')).filter(visible);
+    if (
+      panels.length !== 1 ||
+      roots.length !== 1 ||
+      roots[0].closest('.job-split-layout__left .job-list-panel')
+    )
+      return false;
+    const root = roots[0];
+    const rightTitle = Array.from(root.querySelectorAll('.job-detail-summary__title-text')).filter(
+      visible,
+    );
+    const rightCompany = Array.from(
+      root.querySelectorAll('.job-detail-summary__company-name'),
+    ).filter(visible);
+    if (
+      rightTitle.length !== 1 ||
+      rightCompany.length !== 1 ||
+      normalize(rightTitle[0].textContent ?? '') !== normalize(observation.title) ||
+      normalize(rightCompany[0].textContent ?? '') !== normalize(observation.company) ||
+      rightPublicZhilianId(root, href(), observation.title) !== observationId
+    )
+      return false;
+    const rightTag = Array.from(root.querySelectorAll('.job-detail-summary__tag')).find(visible);
+    const rightPlace = explicitCityDistrict(rightTag?.textContent ?? '');
+    if (!rightPlace) return false;
+    const all = adapter
+      .listTargets(document, href())
+      .filter((item) => item.element.isConnected && visible(item.element));
+    const selectedTargets = all.filter(
+      (item) =>
+        selected(item.element) === true &&
+        item.element.closest('.job-split-layout__left .job-list-panel') === panels[0],
+    );
+    if (selectedTargets.length !== 1 || selectedTargets[0].element !== target.element) return false;
+    if (
+      all.some(
+        (item) =>
+          item.element !== target.element &&
+          (item.platform_job_id || stableId(item.key)) === observationId,
+      )
+    )
+      return false;
+    const group = all.filter(
+      (item) =>
+        normalize(item.title) === normalize(target.title) &&
+        normalize(item.company ?? '') === normalize(target.company ?? ''),
+    );
+    const matches: BatchTarget[] = [];
+    for (const item of group) {
+      if (
+        !item.element.matches('.job-card') ||
+        item.element.closest('.job-split-layout__left .job-list-panel') !== panels[0]
+      )
+        return false;
+      const locations = Array.from(item.element.querySelectorAll('.job-card__location')).filter(
+        visible,
+      );
+      if (locations.length !== 1) return false;
+      const place = explicitCityDistrict(locations[0].textContent ?? '');
+      if (!place) return false;
+      if (
+        sameAdministrativePart(place[0], rightPlace[0], ['市']) &&
+        sameAdministrativePart(place[1], rightPlace[1], ['市', '区', '县'])
+      )
+        matches.push(item);
+    }
+    return group.length > 1 && matches.length === 1 && matches[0].element === target.element;
+  }
+
   function detail(target: BatchTarget, values: BatchTarget[]): Observation | undefined {
     const observations = adapter
       .observe(document, href())
@@ -348,7 +494,11 @@ export function createBatchReader(document: Document, href: () => string, adapte
           normalize(item.title) === normalize(target.title) &&
           normalize(item.company ?? '') === normalize(target.company ?? ''),
       );
-      if (duplicates.length !== 1) return;
+      if (duplicates.length !== 1) {
+        if (duplicates.length < 2) return;
+        if (!unambiguousZhilianDistrict(target, observation, observationId))
+          throw new Error('同名同公司职位身份待核对；请在招聘网站人工打开独立职位详情核对');
+      }
     }
     const liveTarget = values.find((item) => item.key === target.key);
     if (!liveTarget || selected(liveTarget.element) === false) return;

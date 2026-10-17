@@ -1,4 +1,4 @@
-﻿param([ValidatePattern('^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$')][string]$Version = 'v0.2.0-beta.10')
+﻿param([ValidatePattern('^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$')][string]$Version = 'v0.2.0-beta.11')
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $source = Join-Path $projectRoot "artifacts/windows/$Version/EasyResume"
@@ -39,6 +39,8 @@ $instructions = @"
 以后新版继续放在这个“本地验证”目录。启动入口与 extension 路径保持固定；versions 保留旧包用于回退。用户数据仍在 Windows 用户数据目录，不随程序覆盖或删除。升级后回退旧版前应先导出备份，未来数据库版本可能不支持降级。
 
 这是未签名测试包；不要关闭防护软件。正式Chrome已验证BOSS列表由15条追加到30条、智联搜索列表由20条追加到40条。智联相邻操作至少间隔5秒；原岗位详情持续为空时只重选同一条一次，仍失败则暂停，不将本条算作成功。可在官网重新选择职位，等详情显示后继续；刷新页面后需停止旧任务再重新开始。真实通过范围见 versions/$Version/docs/STATUS.md；遇到验证码请在平台自行处理。
+
+同名同公司的岗位若无法区分，批量会暂停。可在招聘网站点击“查看更多职位信息”，打开独立职位页后再读取。
 "@
 [IO.File]::WriteAllText((Join-Path $localRoot '使用说明.md'), $instructions, [Text.UTF8Encoding]::new($false))
 Get-FileHash -LiteralPath (Join-Path $destination 'EasyResume.exe') -Algorithm SHA256 | Format-List

@@ -4,7 +4,7 @@
 
 EasyResume helps you review your résumé, compare jobs, and prepare message drafts. The app currently uses Chinese; the actual button names are included below.
 
-**Local test build v0.2.0-beta.10:** If you have the local test folder, launch `本地验证/启动 EasyResume.cmd` after closing the older app window. Load the extension from the fixed `本地验证/extension` folder; after an update, reload it in the extension manager and refresh the workbench and recruiting pages. The download links below still point to the published beta.1. Automatic connection, Zhaopin, and batch reading are local beta.10 test features.
+**Local test build v0.2.0-beta.11:** If you have the local test folder, launch `本地验证/启动 EasyResume.cmd` after closing the older app window. Load the extension from the fixed `本地验证/extension` folder; after an update, reload it in the extension manager and refresh the workbench and recruiting pages. The download links below still point to the published beta.1. Automatic connection, Zhaopin, and batch reading are local beta.11 test features.
 
 ## 1. Download and start
 
@@ -56,7 +56,7 @@ Create greeting or clarification drafts in job details, then review them in **�
 
 ## 4. Optional browser extension
 
-The manual workflow works without it. These steps apply to local **beta.10**, which adds experimental BOSS / Zhaopin right-hand detail reading and user-started batch reading. The public beta.1 still uses a pairing code and contains the earlier BOSS prototype. Page changes can break extraction. Automatic sending is unavailable.
+The manual workflow works without it. These steps apply to local **beta.11**, which adds experimental BOSS / Zhaopin right-hand detail reading and user-started batch reading. The public beta.1 still uses a pairing code and contains the earlier BOSS prototype. Page changes can break extraction. Automatic sending is unavailable.
 
 1. Open `chrome://extensions` in Chrome or `edge://extensions` in Edge.
 2. Enable **Developer mode**, choose **Load unpacked**, and select the package's `extension` folder. For the separate extension ZIP, extract it and select the folder containing `manifest.json`.
@@ -73,6 +73,8 @@ Paging uses only supported, recognizable next-page controls or adapted loading a
 If reading fails, select one job’s title and description and use **读取选中的职位文字**. Check the first-line title and company in the workbench. **薪资采用特殊字体，待核对** means the salary font could not be read reliably; check the original page instead of treating salary as absent.
 
 Check the title, company, city, and description before saving; expand **查看读取的职位内容** to inspect the text. Zhaopin interactions are at least five seconds apart. If the same selected job remains empty, it is reselected once; if it stays empty, batch reading pauses. Reselect the job on the site, wait for details, and resume. After refreshing the recruiting page, stop the old task and start again. Changes to existing jobs require review and are not counted as new or silently overwritten. See [validation status](docs/STATUS.md) for actual testing.
+
+When postings share a title and company and cannot be distinguished, batch reading pauses. Click **查看更多职位信息** on the recruiting site to open and read the separate job page.
 
 Website terms may restrict third-party tools. Stop on verification or account warnings and handle them on the website. See [platform validation](docs/PLATFORM_VALIDATION.md) for the tested scope.
 
@@ -105,7 +107,7 @@ Report [issues](https://github.com/EypeZeo/EasyResume/issues) with the version, 
 
 ## 7. Current scope and developer resources
 
-Available: local résumé/job organization, rules, optional AI suggestions, drafts, and backups. Local beta.10 adds experimental BOSS / Zhaopin read-only adapters and bounded batch reading; public beta.1 has an earlier scope. Automatic sending, OCR, company verification, commute maps, and 51job collection are unavailable. Complete real-site workflows and real-résumé accuracy require separate validation.
+Available: local résumé/job organization, rules, optional AI suggestions, drafts, and backups. Local beta.11 adds experimental BOSS / Zhaopin read-only adapters and bounded batch reading; public beta.1 has an earlier scope. Automatic sending, OCR, company verification, commute maps, and 51job collection are unavailable. Complete real-site workflows and real-résumé accuracy require separate validation.
 
 [Development](docs/DEVELOPMENT.md) · [Design](docs/PLAN.md) · [Validation](docs/STATUS.md) · [Reuse review (Chinese)](docs/OPEN_SOURCE_REUSE.md) · [Third-party notices](THIRD_PARTY_NOTICES.md)
 

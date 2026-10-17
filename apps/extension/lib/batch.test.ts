@@ -168,6 +168,57 @@ function emptyZhilianFixture() {
   };
 }
 
+function districtIdentityFixture(
+  first = '郑州 金水 杜岭',
+  second = '郑州 管城 金岱',
+  right = '郑州·金水区·陈庄',
+) {
+  href = 'https://www.zhaopin.com/jobs/?pageMode=search';
+  document.title = '合成智联职位';
+  document.body.innerHTML = `<aside class="job-split-layout__left"><div class="job-list-panel">
+    <article class="job-card job-card--active"><span class="job-card__title-clamp">运维工程师双休</span><span class="job-card__company-name">合成瑞子公司</span><span class="job-card__location"></span></article>
+    <article class="job-card"><span class="job-card__title-clamp">运维工程师双休</span><span class="job-card__company-name">合成瑞子公司</span><span class="job-card__location"></span></article>
+  </div></aside><section class="job-detail-modules"><h1 class="job-detail-summary__title-text">运维工程师双休</h1><span class="job-detail-summary__company-name">合成瑞子公司</span><span class="job-detail-summary__tag"></span><div class="job-description__content">完整的合成运维职责</div><a href="https://www.zhaopin.com/jobdetail/RIGHT_A.htm">查看更多职位信息</a></section>`;
+  const cards = Array.from(document.querySelectorAll<HTMLElement>('.job-card'));
+  cards[0].querySelector('.job-card__location')!.textContent = first;
+  cards[1].querySelector('.job-card__location')!.textContent = second;
+  const root = document.querySelector<HTMLElement>('.job-detail-modules')!;
+  root.querySelector('.job-detail-summary__tag')!.textContent = right;
+  const click = vi.fn();
+  for (const card of cards)
+    card.addEventListener('click', () => {
+      click();
+      cards.forEach((item) => item.classList.toggle('job-card--active', item === card));
+    });
+  const adapter: BatchAdapter = {
+    listTargets: () =>
+      Array.from(document.querySelectorAll<HTMLElement>('.job-card')).map((element) => ({
+        key: `运维工程师双休\u001f合成瑞子公司\u001f${element.querySelector('.job-card__location')!.textContent}`,
+        title: '运维工程师双休',
+        company: '合成瑞子公司',
+        platform_job_id: element.dataset.id ?? '',
+        element,
+      })),
+    observe: () => [
+      {
+        protocol: 1,
+        url: 'https://www.zhaopin.com/jobdetail/RIGHT_A.htm',
+        title: '运维工程师双休',
+        company: '合成瑞子公司',
+        text: right + '\n完整的合成运维职责',
+        platform_job_id: 'RIGHT_A',
+        city: '郑州',
+        page_kind: 'detail',
+        employment_type: 'unknown',
+        recruitment_type: 'unknown',
+        blocked: false,
+      },
+    ],
+    nextPageTarget: () => undefined,
+  };
+  return { reader: createBatchReader(document, () => href, adapter), adapter, root, cards, click };
+}
+
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date('2026-10-17T04:00:00Z'));
@@ -791,5 +842,99 @@ describe('one bounded reselection of an empty selected Zhilian detail', () => {
     await vi.advanceTimersByTimeAsync(3200);
     expect((await second).observation?.platform_job_id).toBe('b');
     expect(test.clickCount()).toBe(2);
+  });
+});
+
+describe('strict Zhilian city and administrative district identity', () => {
+  it('distinguishes the uniquely selected city/district while ignoring differing street names', async () => {
+    const test = districtIdentityFixture();
+    const snapshot = test.reader.prepare('district_match');
+    const pending = test.reader.step(job(snapshot, snapshot.targets[0].key));
+    await vi.advanceTimersByTimeAsync(3200);
+    expect(await pending).toMatchObject({
+      observation: { platform_job_id: 'RIGHT_A', text: expect.stringContaining('陈庄') },
+      completed: 1,
+    });
+    expect(test.cards[0].textContent).toContain('杜岭');
+    expect(test.click).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['郑州市 金水 杜岭', '郑州·金水区·陈庄'],
+    ['郑州 新郑 杜岭', '郑州·新郑市·陈庄'],
+    ['郑州 合成 杜岭', '郑州·合成县·陈庄'],
+  ])('allows only one optional administrative suffix: %s / %s', async (first, right) => {
+    const test = districtIdentityFixture(first, undefined, right);
+    const snapshot = test.reader.prepare('suffix');
+    const pending = test.reader.step(job(snapshot, snapshot.targets[0].key));
+    await vi.advanceTimersByTimeAsync(3200);
+    expect((await pending).observation?.platform_job_id).toBe('RIGHT_A');
+  });
+
+  it.each([
+    ['same-district', '郑州 金水 杜岭', '郑州 金水 金岱', '郑州·金水区·陈庄'],
+    ['missing-other-district', '郑州 金水 杜岭', '郑州', '郑州·金水区·陈庄'],
+    ['missing-right-district', '郑州 金水 杜岭', '郑州 管城 金岱', '郑州'],
+    ['unknown-right-district', '郑州 金水 杜岭', '郑州 管城 金岱', '郑州·未知'],
+    ['conflicting-suffix', '郑州 金水区 杜岭', '郑州 管城 金岱', '郑州·金水县·陈庄'],
+    ['substring-district', '郑州 金水新区 杜岭', '郑州 管城 金岱', '郑州·金水区·陈庄'],
+    ['different-city', '郑州 金水 杜岭', '郑州 管城 金岱', '开封·金水区·陈庄'],
+  ])('keeps %s identity ambiguous', async (_name, first, second, right) => {
+    const test = districtIdentityFixture(first, second, right);
+    const snapshot = test.reader.prepare('district_reject');
+    const rejection = expect(
+      test.reader.step(job(snapshot, snapshot.targets[0].key)),
+    ).rejects.toThrow('身份待核对');
+    await vi.advanceTimersByTimeAsync(15000);
+    await rejection;
+    expect(test.click).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a selected B card while the late right detail still identifies A district', async () => {
+    const test = districtIdentityFixture();
+    const snapshot = test.reader.prepare('late_a');
+    const rejection = expect(
+      test.reader.step(job(snapshot, snapshot.targets[1].key)),
+    ).rejects.toThrow('身份待核对');
+    await vi.advanceTimersByTimeAsync(15000);
+    await rejection;
+    expect(test.cards[1].classList.contains('job-card--active')).toBe(true);
+    expect(test.click).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    'missing-link',
+    'link-id-mismatch',
+    'two-link-ids',
+    'other-card-id',
+    'other-left-panel',
+    'two-right-modules',
+  ] as const)('rejects %s despite matching geography', async (problem) => {
+    const test = districtIdentityFixture();
+    if (problem === 'missing-link') test.root.querySelector('a')!.remove();
+    if (problem === 'link-id-mismatch')
+      test.root
+        .querySelector('a')!
+        .setAttribute('href', 'https://www.zhaopin.com/jobdetail/OTHER.htm');
+    if (problem === 'two-link-ids')
+      test.root.insertAdjacentHTML(
+        'beforeend',
+        '<a href="https://www.zhaopin.com/jobdetail/OTHER.htm">查看更多职位信息</a>',
+      );
+    if (problem === 'other-card-id') test.cards[1].dataset.id = 'RIGHT_A';
+    if (problem === 'other-left-panel') {
+      const column = document.querySelector('.job-split-layout__left')!;
+      const panel = document.createElement('div');
+      panel.className = 'job-list-panel';
+      panel.append(test.cards[1]);
+      column.append(panel);
+    }
+    if (problem === 'two-right-modules') document.body.append(test.root.cloneNode(true));
+    const snapshot = test.reader.prepare('provenance');
+    const rejection = expect(
+      test.reader.step(job(snapshot, snapshot.targets[0].key)),
+    ).rejects.toThrow('身份待核对');
+    await vi.advanceTimersByTimeAsync(15000);
+    await rejection;
   });
 });
