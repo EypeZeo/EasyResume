@@ -103,7 +103,7 @@ export default function BrowserCollector({ onSaved }: { onSaved: () => Promise<u
       } else if (type === 'SAVE') {
         setObservations([]);
         setMessage(
-          `新增 ${result.saved ?? 0} 个职位，跳过重复 ${result.duplicates ?? 0} 个。返回岗位工作台继续筛选。`,
+          `新增 ${result.saved ?? 0} 个职位，跳过重复 ${result.duplicates ?? 0} 个${result.pendingReview ? `，${result.pendingReview} 个职位有变化待核对` : ''}${result.unconfirmed ? `，${result.unconfirmed} 个保存结果待核对` : ''}。返回岗位工作台继续筛选。`,
         );
         void onSaved().catch(() => {});
       } else if (result.status) {
@@ -241,6 +241,12 @@ export default function BrowserCollector({ onSaved }: { onSaved: () => Promise<u
             <li key={index}>
               <strong>{item.title}</strong> · {item.company || '公司待核对'}
               {item.text?.includes('薪资采用特殊字体') && ' · 薪资待核对'}
+              {item.text && (
+                <details className="record-source">
+                  <summary>查看读取的职位内容</summary>
+                  <pre className="source-text">{item.text}</pre>
+                </details>
+              )}
             </li>
           ))}
         </ul>
@@ -313,6 +319,8 @@ export default function BrowserCollector({ onSaved }: { onSaved: () => Promise<u
         {batch && (
           <p>
             已检查 {batch.visited ?? 0} 条 · 新增 {batch.saved ?? 0} 条 · 第 {batch.pages ?? 0} 页
+            {batch.pendingReview > 0 && ` · ${batch.pendingReview} 条变化待核对`}
+            {batch.unconfirmed > 0 && ` · ${batch.unconfirmed} 条保存结果待核对`}
           </p>
         )}
       </details>

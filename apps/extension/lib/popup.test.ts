@@ -113,6 +113,49 @@ describe('compact extension workflow', () => {
     expect(document.getElementById('status')?.textContent).not.toContain('已保存 0');
     expect(button('save').disabled).toBe(true);
   });
+  it.each([
+    [{ pendingReview: 1, unconfirmed: 0 }, '1 个岗位更新待核对'],
+    [{ pendingReview: 0, unconfirmed: 1 }, '1 条保存结果待核对'],
+  ])(
+    'does not announce an update or an unconfirmed save as a new job: %j',
+    async (counts, text) => {
+      sendMessage.mockImplementation(async (message: { type: string }) => {
+        if (message.type === 'STATUS') return health;
+        if (message.type === 'BATCH_STATUS') return idleBatch;
+        if (message.type === 'SAVE') return { saved: 0, duplicates: 0, ...counts };
+        return { observations: [observation] };
+      });
+      await load();
+      button('read').click();
+      await settle();
+      button('save').click();
+      await settle();
+      expect(document.getElementById('status')?.textContent).toContain(text);
+      expect(document.getElementById('status')?.textContent).not.toContain('新增');
+      expect(document.getElementById('status')?.textContent).not.toContain('已保存');
+    },
+  );
+  it('shows pending changes and unknown outcomes alongside batch counts', async () => {
+    sendMessage.mockImplementation(async (message: { type: string }) =>
+      message.type === 'STATUS'
+        ? health
+        : {
+            ...idleBatch,
+            status: 'completed',
+            visited: 4,
+            saved: 1,
+            pendingReview: 1,
+            duplicates: 1,
+            unconfirmed: 1,
+            message: '本次批量读取已完成',
+          },
+    );
+    await load();
+    expect(document.getElementById('batch-saved')?.textContent).toBe('1');
+    expect(document.getElementById('batch-message')?.textContent).toContain('更新待核对 1 条');
+    expect(document.getElementById('batch-message')?.textContent).toContain('重复跳过 1 条');
+    expect(document.getElementById('batch-message')?.textContent).toContain('保存结果待核对 1 条');
+  });
   it('shows the salary verification hint when the source uses an unreadable special font', async () => {
     sendMessage.mockImplementation(async (message: { type: string }) =>
       message.type === 'STATUS'

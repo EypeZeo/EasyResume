@@ -285,17 +285,30 @@ export function createBatchReader(document: Document, href: () => string, adapte
 
   function safeLoadMore(element: HTMLElement, before: BatchTarget[]): void {
     const url = new URL(href());
+    const bossPanels = Array.from(
+      document.querySelectorAll('.job-list-container > ul.rec-job-list'),
+    ).filter((panel) => visible(panel) && !panel.closest('.job-detail-container'));
+    const bossList = element.parentElement;
+    const bossAllowed =
+      ['www.zhipin.com', 'zhipin.com'].includes(url.hostname) &&
+      element.matches('li.job-card-box') &&
+      bossPanels.length === 1 &&
+      bossList === bossPanels[0] &&
+      Array.from(bossList.querySelectorAll(':scope > li.job-card-box')).filter(visible).at(-1) ===
+        element;
+    const zhilianAllowed =
+      ['www.zhaopin.com', 'sou.zhaopin.com', 'jobs.zhaopin.com'].includes(url.hostname) &&
+      element.matches('.job-card') &&
+      !!element.closest('.job-split-layout__left .job-list-panel');
     if (
-      !['www.zhaopin.com', 'sou.zhaopin.com', 'jobs.zhaopin.com'].includes(url.hostname) ||
+      (!bossAllowed && !zhilianAllowed) ||
       !element.isConnected ||
       !visible(element) ||
-      !element.matches('.job-card') ||
-      !element.closest('.job-split-layout__left .job-list-panel') ||
       before.at(-1)?.element !== element
     )
       throw new Error('未识别可安全滚动的职位列表，请手动加载更多');
     // Only the verified list's final card is scrolled. Never click a card to load more.
-    element.scrollIntoView({ block: 'end', behavior: 'auto' });
+    element.scrollIntoView({ block: bossAllowed ? 'start' : 'end', behavior: 'auto' });
     lastClick = Date.now();
   }
 

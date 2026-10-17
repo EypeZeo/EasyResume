@@ -99,3 +99,28 @@ it('restores a paused task when the settings page is reopened', async () => {
   expect(host.textContent).toContain('停止批量读取');
   expect(host.textContent).toContain('新增 3 条');
 });
+it('lets users inspect the extracted description without executing page markup', async () => {
+  respond = () => ({
+    observations: [
+      { title: '合成岗位', company: '', text: '维护服务器\n<img src=x onerror=alert(1)>' },
+    ],
+  });
+  await click('读取浏览器当前职位');
+  expect(host.textContent).toContain('公司待核对');
+  expect(host.querySelector('details.record-source summary').textContent).toBe(
+    '查看读取的职位内容',
+  );
+  expect(host.querySelector('pre.source-text').textContent).toBe(
+    '维护服务器\n<img src=x onerror=alert(1)>',
+  );
+  expect(host.querySelector('img')).toBeNull();
+});
+it('does not describe changed existing jobs as newly added jobs', async () => {
+  respond = ({ type }) =>
+    type === 'READ'
+      ? { observations: [{ title: '合成岗位' }] }
+      : { saved: 0, duplicates: 1, pendingReview: 2 };
+  await click('读取浏览器当前职位');
+  await click('保存读取的职位');
+  expect(host.textContent).toContain('新增 0 个职位，跳过重复 1 个，2 个职位有变化待核对');
+});

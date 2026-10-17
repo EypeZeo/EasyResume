@@ -55,7 +55,10 @@ export default defineContentScript({
         if (page.kind === 'list' || page.kind === 'detail') {
           try {
             result.listCount = listTargets(document, location.href).length;
-            result.canRead = observe(document, location.href).length > 0;
+            const observations = observe(document, location.href);
+            result.canRead = observations.length > 0;
+            if (observations.some((observation) => !observation.company))
+              result.diagnostics = diagnosePage(document, location.href);
           } catch (error) {
             result.message = error instanceof Error ? error.message : '职位详情尚未就绪';
             result.diagnostics = diagnosePage(document, location.href);
@@ -94,6 +97,9 @@ export default defineContentScript({
         sendResponse({
           observations,
           source: { href: location.href, platform: classifyRecruitingPage(location.href).platform },
+          ...(message.type === 'COLLECT_CURRENT_PAGE'
+            ? { diagnostics: diagnosePage(document, location.href) }
+            : {}),
         });
       } catch (error) {
         sendResponse({

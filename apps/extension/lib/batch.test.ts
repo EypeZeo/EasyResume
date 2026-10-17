@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createBatchReader, type BatchAdapter, type BatchSnapshot } from './batch';
-import { listExhausted, type Observation } from './observe';
+import { listExhausted, loadMoreTarget, type Observation } from './observe';
 
 const url = 'https://www.zhipin.com/web/geek/job-recommend';
 let href = url;
@@ -84,6 +84,36 @@ function scrollingFixture() {
   const scroll = vi.fn();
   last.scrollIntoView = scroll;
   return { ...test, panel, scroll };
+}
+
+function bossScrollingFixture() {
+  const test = fixture();
+  const old = document.querySelector<HTMLElement>('#cards')!;
+  const container = document.createElement('div');
+  container.className = 'job-list-container';
+  const panel = document.createElement('ul');
+  panel.className = 'rec-job-list';
+  const click = vi.fn();
+  for (const source of old.querySelectorAll<HTMLElement>('.card')) {
+    const card = document.createElement('li');
+    card.className = 'card job-card-box';
+    card.dataset.key = source.dataset.key;
+    card.innerHTML = source.innerHTML;
+    card.addEventListener('click', click);
+    panel.append(card);
+  }
+  container.append(panel);
+  const loading = document.createElement('div');
+  loading.className = 'loading-wait';
+  container.append(loading);
+  old.replaceWith(container);
+  document.querySelector('.next')!.remove();
+  test.adapter.loadMoreTarget = loadMoreTarget;
+  test.adapter.listExhausted = listExhausted;
+  const last = panel.lastElementChild as HTMLElement;
+  const scroll = vi.fn();
+  last.scrollIntoView = scroll;
+  return { ...test, panel, container, loading, scroll, click };
 }
 
 beforeEach(() => {
@@ -274,6 +304,115 @@ describe('bounded readonly batch steps on synthetic DOM', () => {
     expect(next.pageNumber).toBe(2);
     expect(next.canNextPage).toBe(false);
     expect(test.clicks()).toBe(0);
+  });
+
+  it('loads the observed BOSS left list by scrolling its final card and waits for appended identities', async () => {
+    const test = bossScrollingFixture();
+    test.scroll.mockImplementation(() =>
+      setTimeout(() => {
+        const card = test.panel.lastElementChild!.cloneNode(true) as HTMLElement;
+        card.dataset.key = 'c';
+        card.querySelector('.title')!.textContent = '新增合成 BOSS 岗位';
+        test.panel.append(card);
+      }, 600),
+    );
+    const manual = test.reader.prepare('manual');
+    expect(manual.canNextPage).toBe(false);
+    expect((await test.reader.step({ ...manual, kind: 'next_page' })).done).toBe(true);
+    expect(test.scroll).not.toHaveBeenCalled();
+    const snapshot = test.reader.prepare('boss_scroll', { allowNextPage: true, maxPages: 2 });
+    expect(snapshot.canNextPage).toBe(true);
+    const pending = test.reader.step({ ...snapshot, kind: 'next_page' });
+    await vi.advanceTimersByTimeAsync(3200);
+    const result = await pending;
+    expect(test.scroll).toHaveBeenCalledOnce();
+    expect(test.scroll).toHaveBeenCalledWith({ block: 'start', behavior: 'auto' });
+    expect(result.targets).toHaveLength(3);
+    expect(result.pageKey).not.toBe(snapshot.pageKey);
+    expect(result.pageNumber).toBe(2);
+    expect(result.canNextPage).toBe(false);
+    expect(result.endOfList).toBe(false);
+    expect(test.click).not.toHaveBeenCalled();
+  });
+
+  it('pauses BOSS scrolling when its empty loading placeholder produces no new jobs', async () => {
+    const test = bossScrollingFixture();
+    const snapshot = test.reader.prepare('boss_no_append', { allowNextPage: true });
+    expect(snapshot.endOfList).toBe(false);
+    const rejection = expect(test.reader.step({ ...snapshot, kind: 'next_page' })).rejects.toThrow(
+      '新增职位超时',
+    );
+    await vi.advanceTimersByTimeAsync(15200);
+    await rejection;
+    expect(test.scroll).toHaveBeenCalledOnce();
+    expect(test.click).not.toHaveBeenCalled();
+    await expect(test.reader.step({ ...snapshot, kind: 'next_page' })).rejects.toThrow(
+      '新增职位超时',
+    );
+    expect(test.scroll).toHaveBeenCalledOnce();
+  });
+
+  it('never scrolls a BOSS card borrowed from the right detail even if an adapter returns it', async () => {
+    const test = bossScrollingFixture();
+    const right = document.createElement('section');
+    right.className = 'job-detail-container';
+    right.innerHTML =
+      '<div class="job-list-container"><ul class="rec-job-list"><li class="job-card-box">详情内相似卡片</li></ul><div class="loading-wait"></div></div>';
+    document.body.append(right);
+    const wrong = right.querySelector<HTMLElement>('li')!;
+    const scroll = vi.fn();
+    wrong.scrollIntoView = scroll;
+    expect(loadMoreTarget(document, href)).toBe(test.panel.lastElementChild);
+    test.adapter.loadMoreTarget = () => wrong;
+    test.adapter.listTargets = () => [{ key: 'wrong', title: '详情内相似卡片', element: wrong }];
+    const snapshot = test.reader.prepare('boss_wrong_panel', { allowNextPage: true });
+    await expect(test.reader.step({ ...snapshot, kind: 'next_page' })).rejects.toThrow('安全滚动');
+    expect(scroll).not.toHaveBeenCalled();
+  });
+
+  it('scrolls only the verified BOSS final card when its transient loading placeholder is absent', async () => {
+    const test = bossScrollingFixture();
+    test.loading.remove();
+    expect(loadMoreTarget(document, href)).toBe(test.panel.lastElementChild);
+    test.scroll.mockImplementation(() =>
+      setTimeout(() => {
+        const card = test.panel.lastElementChild!.cloneNode(true) as HTMLElement;
+        card.dataset.key = 'c';
+        test.panel.append(card);
+      }, 600),
+    );
+    const snapshot = test.reader.prepare('boss_transient_loader', { allowNextPage: true });
+    expect(snapshot.canNextPage).toBe(true);
+    const pending = test.reader.step({ ...snapshot, kind: 'next_page' });
+    await vi.advanceTimersByTimeAsync(3200);
+    const result = await pending;
+    expect(result.targets).toHaveLength(3);
+    expect(result.pageNumber).toBe(2);
+    expect(result.endOfList).toBe(false);
+    expect(test.scroll).toHaveBeenCalledExactlyOnceWith({ block: 'start', behavior: 'auto' });
+    expect(test.click).not.toHaveBeenCalled();
+  });
+
+  it('does not invent a BOSS load-more target with ambiguous left lists', () => {
+    const test = bossScrollingFixture();
+    document.body.append(test.container.cloneNode(true));
+    expect(loadMoreTarget(document, href)).toBeUndefined();
+  });
+
+  it('does not scroll BOSS after reaching the configured item limit', async () => {
+    const test = bossScrollingFixture();
+    const root = document.querySelector('#detail')!;
+    root.setAttribute('data-id', 'a');
+    root.querySelector('h1')!.textContent = 'Linux 运维';
+    root.querySelector('.company')!.textContent = '合成甲公司';
+    const snapshot = test.reader.prepare('boss_item_limit', { allowNextPage: true, maxItems: 1 });
+    const pending = test.reader.step(job(snapshot));
+    await vi.advanceTimersByTimeAsync(3200);
+    const result = await pending;
+    expect(result.done).toBe(true);
+    expect((await test.reader.step({ ...result, kind: 'next_page' })).done).toBe(true);
+    expect(test.scroll).not.toHaveBeenCalled();
+    expect(test.click).not.toHaveBeenCalled();
   });
 
   it('pauses after one list scroll if no new cards appear', async () => {

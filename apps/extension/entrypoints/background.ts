@@ -66,6 +66,9 @@ type NavigationLifetime = {
 type Task = {
   status: 'idle' | 'running' | 'paused' | 'completed' | 'stopped' | 'error';
   saved: number;
+  duplicates?: number;
+  pendingReview?: number;
+  unconfirmed?: number;
   visited: number;
   pages: number;
   maxJobs: number;
@@ -81,6 +84,9 @@ type Task = {
 const emptyTask = (): Task => ({
   status: 'idle',
   saved: 0,
+  duplicates: 0,
+  pendingReview: 0,
+  unconfirmed: 0,
   visited: 0,
   pages: 0,
   maxJobs: 20,
@@ -447,7 +453,9 @@ export default defineBackground(() => {
     )
       throw new Error('任务或工作台连接已变化，请重新确认');
     let count = 0,
-      duplicates = 0;
+      duplicates = 0,
+      pendingReview = 0,
+      unconfirmed = 0;
     for (const observation of observations) {
       const url = new URL(observation.url);
       if (
@@ -471,10 +479,12 @@ export default defineBackground(() => {
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body.detail || '保存失败，请检查工作台连接');
-      if (body.duplicate) duplicates++;
-      else count++;
+      if (body?.duplicate === true || body?.status === 'repeat') duplicates++;
+      else if (body?.status === 'awaiting_review') count++;
+      else if (body?.status === 'changed_requires_review') pendingReview++;
+      else unconfirmed++;
     }
-    return { saved: count, duplicates };
+    return { saved: count, duplicates, pendingReview, unconfirmed };
   }
   async function cancelBatch(message: string, stopped = false) {
     ++batchEpoch;
@@ -504,11 +514,16 @@ export default defineBackground(() => {
           task = {
             ...task,
             status: 'completed',
-            message: target
-              ? '已达到读取数量上限'
-              : snapshot.endOfList
-                ? '没有更多职位，本次批量读取已完成'
-                : '当前可读取的岗位已完成；没有可用的下一页时不会盲目翻页',
+            message:
+              task.visited >= task.maxJobs
+                ? '已达到读取数量上限'
+                : snapshot.endOfList
+                  ? '没有更多职位，本次批量读取已完成'
+                  : !task.autoPage
+                    ? '当前列表已读完；未开启自动加载下一批'
+                    : task.pages >= task.maxPages
+                      ? '已达到读取页数上限'
+                      : '未识别到下一批加载入口，已停止；不代表网站没有更多职位',
           };
           await persist();
           return;
@@ -549,12 +564,19 @@ export default defineBackground(() => {
             task.seen.push(target.key);
             task.visited++;
             task.saved += saved.saved;
+            task.duplicates = (task.duplicates ?? 0) + saved.duplicates;
+            task.pendingReview = (task.pendingReview ?? 0) + saved.pendingReview;
+            task.unconfirmed = (task.unconfirmed ?? 0) + saved.unconfirmed;
             task.message =
               epoch === batchEpoch
-                ? saved.duplicates
-                  ? '已跳过已存在的职位'
-                  : `已保存：${step.observation.title}`
-                : '已暂停；暂停前开始保存的岗位已完成';
+                ? saved.unconfirmed
+                  ? `保存结果待核对：${step.observation.title}`
+                  : saved.pendingReview
+                    ? `职位更新待核对：${step.observation.title}`
+                    : saved.duplicates
+                      ? '已跳过已存在的职位'
+                      : `新增岗位待核对：${step.observation.title}`
+                : '已暂停；暂停前开始处理的岗位结果已记录';
           }
           if (epoch !== batchEpoch || task.status !== 'running') {
             await persist();

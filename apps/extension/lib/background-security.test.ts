@@ -93,6 +93,96 @@ afterEach(() => {
 });
 
 describe('background connection and cancellation boundary', () => {
+  it.each([
+    [{ status: 'awaiting_review' }, { saved: 1, duplicates: 0, pendingReview: 0, unconfirmed: 0 }],
+    [{ status: 'repeat' }, { saved: 0, duplicates: 1, pendingReview: 0, unconfirmed: 0 }],
+    [{ duplicate: true }, { saved: 0, duplicates: 1, pendingReview: 0, unconfirmed: 0 }],
+    [
+      { status: 'changed_requires_review' },
+      { saved: 0, duplicates: 0, pendingReview: 1, unconfirmed: 0 },
+    ],
+    [{}, { saved: 0, duplicates: 0, pendingReview: 0, unconfirmed: 1 }],
+    [{ status: 'future_status' }, { saved: 0, duplicates: 0, pendingReview: 0, unconfirmed: 1 }],
+    [null, { saved: 0, duplicates: 0, pendingReview: 0, unconfirmed: 1 }],
+  ])('counts observation response %j without inventing new jobs', async (body, counts) => {
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify(body)));
+    await load();
+    expect(
+      await send({
+        type: 'SAVE',
+        observations: [
+          { url: 'https://www.zhipin.com/job_detail/synthetic.html', title: '合成岗位' },
+        ],
+      }),
+    ).toEqual(counts);
+  });
+
+  it('separates new jobs, repeat observations, pending changes and unknown outcomes in one save', async () => {
+    const responses = [
+      { status: 'awaiting_review' },
+      { status: 'repeat' },
+      { duplicate: true },
+      { status: 'changed_requires_review' },
+      {},
+    ];
+    vi.mocked(fetch).mockImplementation(
+      async () => new Response(JSON.stringify(responses.shift())),
+    );
+    await load();
+    expect(
+      await send({
+        type: 'SAVE',
+        observations: Array.from({ length: 5 }, (_, index) => ({
+          url: `https://www.zhipin.com/job_detail/synthetic-${index}.html`,
+          title: `合成岗位${index}`,
+        })),
+      }),
+    ).toEqual({ saved: 1, duplicates: 2, pendingReview: 1, unconfirmed: 1 });
+  });
+
+  it('keeps a changed job pending review in batch totals instead of counting it as new', async () => {
+    const snapshot = {
+      documentId: 'synthetic-document',
+      href: 'https://www.zhipin.com/web/geek/jobs',
+      pageKey: 'page-one',
+      pageNumber: 1,
+      completed: 0,
+      targets: [{ key: 'first', title: '合成岗位' }],
+      canNextPage: false,
+    };
+    mocks.sendMessage.mockImplementation(async (_tab, message) =>
+      message.type === 'PAGE_STATUS'
+        ? { page: { platform: 'boss', kind: 'list' }, entries: [], canRead: true, listCount: 1 }
+        : message.type === 'BATCH_PREPARE'
+          ? { ...snapshot, taskId: message.taskId }
+          : message.type === 'BATCH_STEP'
+            ? {
+                ...snapshot,
+                taskId: message.taskId,
+                done: true,
+                observation: {
+                  url: 'https://www.zhipin.com/job_detail/synthetic.html',
+                  title: '合成岗位',
+                },
+              }
+            : { stopped: true },
+    );
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(JSON.stringify({ status: 'changed_requires_review' })),
+    );
+    await load();
+    expect((await send({ type: 'BATCH_START', maxJobs: 1 })).status).toBe('running');
+    await settle();
+    expect(await send({ type: 'BATCH_STATUS' })).toMatchObject({
+      status: 'completed',
+      visited: 1,
+      saved: 0,
+      pendingReview: 1,
+      duplicates: 0,
+      unconfirmed: 0,
+    });
+  });
+
   it('rejects recruitment-page proxies, remote origins and subframe bridges', async () => {
     await load();
     for (const sender of [

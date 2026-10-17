@@ -184,6 +184,8 @@ const BOSS_DESCRIPTION =
 const JOB_CARDS = '.job-card-box,.job-card-wrapper,.job-card-body,.job-card';
 const JOB_LISTS = '.job-list-box,.job-list-container,.job-split-layout__left,.job-list-panel';
 const TITLE_METADATA = '.salary,.job-salary';
+const BOSS_COMPANY =
+  '.sider-company .company-info a,.sider-company .company-name,.company-name,.company-info a';
 
 function outsideCard(element: Element): boolean {
   return !element.closest(JOB_CARDS);
@@ -214,6 +216,68 @@ function detailText(root: ParentNode, selectors: string, lines = false): string 
   }
   return '';
 }
+
+function bossCompany(root: ParentNode, url: URL, card = false): string {
+  const dedicated = card ? text(root, '.company-name') : detailText(root, BOSS_COMPANY);
+  if (dedicated) return dedicated;
+  const names = new Map<string, Set<string>>();
+  for (const anchor of elements(root, 'a[href]')) {
+    if (!card && !outsideCard(anchor)) continue;
+    let target: URL;
+    try {
+      target = new URL(anchor.getAttribute('href')!, url);
+    } catch {
+      continue;
+    }
+    if (
+      target.protocol !== 'https:' ||
+      !boss(target) ||
+      target.username ||
+      target.password ||
+      !/^\/gongsi\/[^/]+\/?$/.test(target.pathname)
+    )
+      continue;
+    const name = formatted(rawText(anchor).trim(), false);
+    if (!name || /^(公司|公司信息|公司详情|查看公司(?:信息)?|更多)$/.test(name)) continue;
+    const key = target.origin + target.pathname;
+    const labels = names.get(key) ?? new Set<string>();
+    labels.add(name);
+    names.set(key, labels);
+  }
+  if (names.size !== 1) return '';
+  const labels = [...names.values()][0];
+  return labels.size === 1 ? [...labels][0] : '';
+}
+
+function bossDetailScopes(root: ParentNode, title: string): ParentNode[] {
+  const scopes = [root];
+  if (!('matches' in root)) return scopes;
+  const normalize = (value: string) => value.replace(/\s/g, '');
+  for (
+    let parent = (root as Element).parentElement;
+    parent && parent.tagName !== 'BODY';
+    parent = parent.parentElement
+  ) {
+    if (!parent.matches(BOSS_ROOTS) || elements(parent, JOB_LISTS).length) continue;
+    const titles = [...new Set(elements(parent, `${BOSS_TITLE},.job-title`))].filter(
+      (element) => outsideCard(element) && !element.closest(BOSS_DESCRIPTION),
+    );
+    const leafTitles = titles.filter(
+      (element) => !titles.some((other) => other !== element && element.contains(other)),
+    );
+    const descriptions = [...new Set(elements(parent, BOSS_DESCRIPTION))].filter(outsideCard);
+    const leafDescriptions = descriptions.filter(
+      (element) => !descriptions.some((other) => other !== element && element.contains(other)),
+    );
+    if (
+      leafTitles.length === 1 &&
+      leafDescriptions.length === 1 &&
+      normalize(bossTitle(parent)) === normalize(title)
+    )
+      scopes.push(parent);
+  }
+  return scopes;
+}
 const base = {
   protocol: 1 as const,
   city: '',
@@ -227,6 +291,7 @@ export type ReadTarget = {
   title: string;
   company: string;
   platform_job_id: string;
+  city?: string;
   element: HTMLElement;
 };
 export function listTargets(document: Document, href: string): ReadTarget[] {
@@ -242,7 +307,9 @@ export function listTargets(document: Document, href: string): ReadTarget[] {
         ? bossTitle(card, true)
         : text(card, '.job-card__title-clamp,.job-card__title-main');
       if (!title) return [];
-      const company = text(card, boss(url) ? '.company-name' : '.job-card__company-name');
+      const company = boss(url)
+        ? bossCompany(card, url, true)
+        : text(card, '.job-card__company-name');
       const link = detailLink(card, url, title, true);
       const location = text(
         card,
@@ -254,6 +321,7 @@ export function listTargets(document: Document, href: string): ReadTarget[] {
           title,
           company,
           platform_job_id: link ? jobId(link) : '',
+          city: redact(location.split(/[·\s]/)[0]).slice(0, 60),
           element: card,
         },
       ];
@@ -276,10 +344,18 @@ export function nextPageTarget(document: Document, href: string): HTMLElement | 
   );
 }
 
-/** Zhilian's observed split list appends another 20 cards when its bottom becomes visible. */
+/** Scroll only the final card of an observed, unambiguous left-hand split list. */
 export function loadMoreTarget(document: Document, href: string): HTMLElement | undefined {
   const url = allowedPage(document, href);
-  if (boss(url)) return;
+  if (boss(url)) {
+    const panels = Array.from(
+      document.querySelectorAll('.job-list-container > ul.rec-job-list'),
+    ).filter((panel) => visible(panel) && !panel.closest('.job-detail-container'));
+    if (panels.length !== 1) return;
+    return Array.from(panels[0].querySelectorAll<HTMLElement>(':scope > li.job-card-box'))
+      .filter(visible)
+      .at(-1);
+  }
   const panel = Array.from(
     document.querySelectorAll('.job-split-layout__left .job-list-panel'),
   ).find(visible);
@@ -318,13 +394,15 @@ function detailObservation(
     true,
   );
   if (!title || !description) return;
-  let company = detailText(
-    root,
-    isBoss
-      ? '.sider-company .company-info a,.sider-company .company-name,.company-name,.company-info a'
-      : '.job-detail-summary__company-name',
-  );
+  let company = isBoss ? '' : detailText(root, '.job-detail-summary__company-name');
   let target = jobId(url) ? url : (detailLink(root, url, title) ?? url);
+  if (isBoss)
+    for (const scope of bossDetailScopes(root, title)) {
+      const link = detailLink(scope, url, title);
+      if (jobId(target) && link && jobId(link) !== jobId(target)) continue;
+      if (!jobId(target) && link) target = link;
+      if (!company) company = bossCompany(scope, url);
+    }
   // A selected card can supply its company/link only after title identity is checked.
   const targets = listTargets(document, url.href);
   const matched = jobId(target)
@@ -334,6 +412,7 @@ function detailObservation(
           t.title.replace(/\s/g, '') === title.replace(/\s/g, ''),
       )
     : [];
+  let verifiedTarget = matched.length === 1 ? matched[0] : undefined;
   if (!company && matched.length === 1) company = matched[0].company;
   const selected = targets.filter(
     (t) =>
@@ -343,12 +422,16 @@ function detailObservation(
   if (
     selected.length === 1 &&
     (selected[0].title.replace(/\s/g, '') !== title.replace(/\s/g, '') ||
+      (jobId(target) &&
+        selected[0].platform_job_id &&
+        jobId(target) !== selected[0].platform_job_id) ||
       (company &&
         selected[0].company &&
         company.replace(/\s/g, '') !== selected[0].company.replace(/\s/g, '')))
   )
     throw new Error('左侧已切换职位，右侧详情仍在加载，请稍后重试');
   if (selected.length === 1 && selected[0].title.replace(/\s/g, '') === title.replace(/\s/g, '')) {
+    verifiedTarget ??= selected[0];
     if (!company) company = selected[0].company;
     if (!jobId(target) && selected[0].platform_job_id) target = new URL(selected[0].key);
   }
@@ -361,9 +444,10 @@ function detailObservation(
         .map((e) => e.textContent?.trim())
         .filter(Boolean)
         .join(' · ');
-  const city = isBoss
+  let city = isBoss
     ? text(root, '.job-area,.job-location,.job-limit a')
     : text(root, '.job-detail-summary__tag');
+  if (isBoss && !city) city = verifiedTarget?.city ?? '';
   const tags = text(root, isBoss ? '.job-tags,.tag-list' : '.job-description__tags', true);
   return {
     ...base,
@@ -445,6 +529,51 @@ export function diagnosePage(document: Document, href: string) {
   )
     .filter((element) => visible(element) && element.textContent?.trim() === '职位描述')
     .slice(0, 5);
+  const companySelectorCounts = (root: ParentNode) =>
+    Object.fromEntries(
+      BOSS_COMPANY.split(',').map((selector) => [selector, elements(root, selector).length]),
+    );
+  const linkKind = (anchor: Element): 'gongsi' | 'job_detail' | 'other' => {
+    try {
+      const target = new URL(anchor.getAttribute('href') ?? '', url);
+      if (target.protocol !== 'https:' || !boss(target) || target.username || target.password)
+        return 'other';
+      if (/^\/gongsi\//.test(target.pathname)) return 'gongsi';
+      if (/^\/job_detail\//.test(target.pathname)) return 'job_detail';
+    } catch {
+      /* an invalid link is not a company or job identity */
+    }
+    return 'other';
+  };
+  const structure = (root: Element) => {
+    const nodes: ({ parentIndex: number; depth: number } & ReturnType<typeof describe>)[] = [];
+    const queue = [{ element: root, parentIndex: -1, depth: 0 }];
+    while (queue.length && nodes.length < 48) {
+      const entry = queue.shift()!;
+      const index = nodes.length;
+      nodes.push({
+        ...describe(entry.element),
+        parentIndex: entry.parentIndex,
+        depth: entry.depth,
+      });
+      if (entry.depth < 4)
+        for (const child of Array.from(entry.element.children).slice(0, 8))
+          if (!child.matches('script,style,svg,img'))
+            queue.push({ element: child, parentIndex: index, depth: entry.depth + 1 });
+    }
+    return nodes;
+  };
+  let parsedTargets: ReadTarget[] = [];
+  try {
+    parsedTargets = listTargets(document, href);
+  } catch {
+    /* the diagnostic also supports the recruiting homepage */
+  }
+  const rawCards = Array.from(
+    document.querySelectorAll(
+      boss(url) ? 'li.job-card-box,.job-card-wrapper,.job-list-box .job-card-body' : '.job-card',
+    ),
+  ).filter(visible);
   return {
     pagePath: url.pathname,
     selectors: counts,
@@ -477,6 +606,46 @@ export function diagnosePage(document: Document, href: string) {
       .filter(outsideCard)
       .slice(0, 6)
       .map(describe),
+    listCards: rawCards
+      .filter((card) => !rawCards.some((other) => other !== card && other.contains(card)))
+      .slice(0, 2)
+      .map((card) => {
+        const parsed = parsedTargets.find((target) => target.element === card);
+        return {
+          ...describe(card),
+          titleLength: parsed?.title.length ?? 0,
+          companyLength: parsed?.company.length ?? 0,
+          hasStableJobId: !!parsed?.platform_job_id,
+          companySelectorCounts: companySelectorCounts(card),
+          structure: structure(card),
+          links: elements(card, 'a[href]')
+            .slice(0, 8)
+            .map((anchor) => ({ ...describe(anchor), pathKind: linkKind(anchor) })),
+        };
+      }),
+    detailRootHierarchy: elements(document, boss(url) ? BOSS_ROOTS : '.job-detail-modules')
+      .filter(outsideCard)
+      .slice(0, 4)
+      .map((root) => {
+        const parents = [];
+        for (
+          let parent = root.parentElement;
+          parent && parents.length < 4;
+          parent = parent.parentElement
+        )
+          parents.push(describe(parent));
+        return {
+          ...describe(root),
+          companySelectorCounts: companySelectorCounts(root),
+          companyLinks: elements(root, 'a[href]').filter(
+            (anchor) => outsideCard(anchor) && linkKind(anchor) === 'gongsi',
+          ).length,
+          jobLinks: elements(root, 'a[href]').filter(
+            (anchor) => outsideCard(anchor) && linkKind(anchor) === 'job_detail',
+          ).length,
+          parents,
+        };
+      }),
     listSurroundings: elements(document, JOB_LISTS)
       .slice(0, 3)
       .map((list) => ({
@@ -533,6 +702,8 @@ export function observe(document: Document, href: string): Observation[] {
     throw new Error('未找到可验证的职位标题或描述，可能页面已改版；请手动粘贴');
   }
   if (roots.length || /job-recommend/.test(url.pathname)) {
+    if (!isBoss && roots.length && roots.every((root) => !rawText(root).trim()))
+      throw new Error('右侧职位详情为空，请在招聘网站重新选择该职位；仍为空时刷新页面后重试');
     const loading = roots.some(
       (root) =>
         elements(root, '[aria-busy="true"],[role="progressbar"],.loading,.is-loading,.skeleton')

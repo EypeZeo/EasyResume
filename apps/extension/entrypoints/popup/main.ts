@@ -15,6 +15,9 @@ let navigationOverride: { tabId?: number; entryUrl?: string } | undefined;
 type BatchStatus = {
   status: 'idle' | 'running' | 'paused' | 'completed' | 'stopped' | 'error';
   saved: number;
+  duplicates?: number;
+  pendingReview?: number;
+  unconfirmed?: number;
   visited: number;
   pages: number;
   maxJobs: number;
@@ -178,7 +181,12 @@ function batchResult(result: unknown) {
   element('batch-saved').textContent = count(batch.saved);
   element('batch-visited').textContent = count(batch.visited);
   element('batch-pages').textContent = count(batch.pages);
-  updateText('batch-message', batch.message ?? '');
+  const outcomes = [
+    batch.pendingReview ? `更新待核对 ${count(batch.pendingReview)} 条` : '',
+    batch.duplicates ? `重复跳过 ${count(batch.duplicates)} 条` : '',
+    batch.unconfirmed ? `保存结果待核对 ${count(batch.unconfirmed)} 条` : '',
+  ].filter(Boolean);
+  updateText('batch-message', [batch.message, ...outcomes].filter(Boolean).join('；'));
   buttons();
 }
 async function refresh(force = false) {
@@ -378,12 +386,20 @@ action('save', async () => {
     const saved = Number.isInteger(result.saved) && result.saved > 0 ? result.saved : 0;
     const duplicates =
       Number.isInteger(result.duplicates) && result.duplicates > 0 ? result.duplicates : 0;
+    const pendingReview =
+      Number.isInteger(result.pendingReview) && result.pendingReview > 0 ? result.pendingReview : 0;
+    const unconfirmed =
+      Number.isInteger(result.unconfirmed) && result.unconfirmed > 0 ? result.unconfirmed : 0;
+    const outcomes = [
+      saved ? `新增 ${saved} 个岗位待核对` : '',
+      pendingReview ? `${pendingReview} 个岗位更新待核对` : '',
+      duplicates ? `${duplicates} 个岗位已存在，已跳过` : '',
+      unconfirmed ? `${unconfirmed} 条保存结果待核对` : '',
+    ].filter(Boolean);
     notice(
-      saved > 0
-        ? `已保存 ${saved} 个岗位${duplicates ? `，${duplicates} 个已存在并跳过` : ''}，到工作台继续筛选。`
-        : duplicates > 0
-          ? `${duplicates} 个岗位已存在，已跳过。可到工作台查看。`
-          : '没有新增岗位，请到工作台检查已有记录。',
+      outcomes.length
+        ? `${outcomes.join('；')}。请到工作台查看。`
+        : '保存结果尚未确认，请到工作台检查。',
     );
   } catch (error) {
     await refresh(true);
