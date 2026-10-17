@@ -351,6 +351,17 @@ describe('observed Zhilian list-end marker', () => {
 });
 
 describe('structure-only page diagnostics', () => {
+  it('reports two bounded wrapper levels around list-tail cards without revealing their text', () => {
+    document.body.innerHTML =
+      '<div class="job-list-container"><ul class="rec-job-list"><div class="card-area is-seen"><div class="job-card-wrap"><li class="job-card-box">合成秘密岗位 联系人13800000000</li></div></div></ul></div>';
+    const result = diagnosePage(document, 'https://www.zhipin.com/web/geek/jobs');
+    const list = result.listSurroundings.find((item) => item.className === 'rec-job-list')!;
+    expect(list.tail[0].className).toBe('card-area is-seen');
+    expect(list.tail[0].children[0].className).toBe('job-card-wrap');
+    expect(list.tail[0].children[0].children[0].tag).toBe('li');
+    expect(list.tail[0].children[0].children[0].className).toBe('job-card-box');
+    expect(JSON.stringify(result)).not.toMatch(/合成秘密岗位|13800000000/);
+  });
   it('reports selector coverage and heading structure without content or URL query values', () => {
     document.title = '合成职位';
     document.body.innerHTML = `<section class="job-detail-box"><h1 class="job-name">合成秘密职位</h1><div class="job-section"><h3>职位描述</h3><div class="job-sec-text">联系人：合成姓名 13800000000，email@example.test</div></div><a href="/job_detail/private.html?tracking=secret">查看更多信息</a></section>`;

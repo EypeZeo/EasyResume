@@ -352,6 +352,54 @@ describe('bounded readonly batch steps on synthetic DOM', () => {
     expect(test.scroll).toHaveBeenCalledOnce();
   });
 
+  it('scrolls the real final BOSS card through the observed card-area and job-card-wrap layers', async () => {
+    const test = bossScrollingFixture();
+    for (const card of Array.from(test.panel.children)) {
+      const area = document.createElement('div');
+      area.className = 'card-area is-seen';
+      const wrap = document.createElement('div');
+      wrap.className = 'job-card-wrap';
+      card.replaceWith(area);
+      wrap.append(card);
+      area.append(wrap);
+    }
+    const last = test.panel.querySelector<HTMLElement>('.card-area:last-child li.job-card-box')!;
+    expect(test.panel.querySelectorAll(':scope > li.job-card-box')).toHaveLength(0);
+    expect(test.panel.querySelectorAll('li.job-card-box')).toHaveLength(2);
+    expect(loadMoreTarget(document, href)).toBe(last);
+    test.scroll.mockImplementation(() =>
+      setTimeout(() => {
+        const area = test.panel.lastElementChild!.cloneNode(true) as HTMLElement;
+        area.querySelector<HTMLElement>('li.job-card-box')!.dataset.key = 'c';
+        test.panel.append(area);
+      }, 600),
+    );
+    const snapshot = test.reader.prepare('boss_wrapped', { allowNextPage: true, maxPages: 2 });
+    expect(snapshot.canNextPage).toBe(true);
+    const pending = test.reader.step({ ...snapshot, kind: 'next_page' });
+    await vi.advanceTimersByTimeAsync(3200);
+    const result = await pending;
+    expect(test.scroll).toHaveBeenCalledExactlyOnceWith({ block: 'start', behavior: 'auto' });
+    expect(result.targets).toHaveLength(3);
+    expect(result.pageNumber).toBe(2);
+    expect(result.canNextPage).toBe(false);
+    expect(result.endOfList).toBe(false);
+    expect(test.click).not.toHaveBeenCalled();
+  });
+
+  it('does not select a nested job card or a card belonging to a nested recommendation list', () => {
+    const test = bossScrollingFixture();
+    const last = test.panel.lastElementChild as HTMLElement;
+    const nestedCard = document.createElement('li');
+    nestedCard.className = 'job-card-box';
+    last.append(nestedCard);
+    const nestedList = document.createElement('ul');
+    nestedList.className = 'rec-job-list';
+    nestedList.innerHTML = '<li class="job-card-box">嵌套推荐卡片</li>';
+    test.panel.append(nestedList);
+    expect(loadMoreTarget(document, href)).toBe(last);
+  });
+
   it('never scrolls a BOSS card borrowed from the right detail even if an adapter returns it', async () => {
     const test = bossScrollingFixture();
     const right = document.createElement('section');

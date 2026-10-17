@@ -288,14 +288,25 @@ export function createBatchReader(document: Document, href: () => string, adapte
     const bossPanels = Array.from(
       document.querySelectorAll('.job-list-container > ul.rec-job-list'),
     ).filter((panel) => visible(panel) && !panel.closest('.job-detail-container'));
-    const bossList = element.parentElement;
+    const bossList = element.closest('ul.rec-job-list');
     const bossAllowed =
       ['www.zhipin.com', 'zhipin.com'].includes(url.hostname) &&
       element.matches('li.job-card-box') &&
       bossPanels.length === 1 &&
       bossList === bossPanels[0] &&
-      Array.from(bossList.querySelectorAll(':scope > li.job-card-box')).filter(visible).at(-1) ===
-        element;
+      !element.parentElement?.closest('.job-card-box,.job-card-wrapper,.job-card-body,.job-card') &&
+      !element.closest('.job-detail-container') &&
+      Array.from(bossList.querySelectorAll('li.job-card-box'))
+        .filter(
+          (card) =>
+            visible(card) &&
+            card.closest('ul.rec-job-list') === bossList &&
+            !card.parentElement?.closest(
+              '.job-card-box,.job-card-wrapper,.job-card-body,.job-card',
+            ) &&
+            !card.closest('.job-detail-container'),
+        )
+        .at(-1) === element;
     const zhilianAllowed =
       ['www.zhaopin.com', 'sou.zhaopin.com', 'jobs.zhaopin.com'].includes(url.hostname) &&
       element.matches('.job-card') &&

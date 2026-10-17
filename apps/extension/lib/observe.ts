@@ -352,8 +352,14 @@ export function loadMoreTarget(document: Document, href: string): HTMLElement | 
       document.querySelectorAll('.job-list-container > ul.rec-job-list'),
     ).filter((panel) => visible(panel) && !panel.closest('.job-detail-container'));
     if (panels.length !== 1) return;
-    return Array.from(panels[0].querySelectorAll<HTMLElement>(':scope > li.job-card-box'))
-      .filter(visible)
+    return Array.from(panels[0].querySelectorAll<HTMLElement>('li.job-card-box'))
+      .filter(
+        (card) =>
+          visible(card) &&
+          card.closest('ul.rec-job-list') === panels[0] &&
+          !card.parentElement?.closest(JOB_CARDS) &&
+          !card.closest('.job-detail-container'),
+      )
       .at(-1);
   }
   const panel = Array.from(
@@ -491,7 +497,7 @@ export function observeSelection(
   ];
 }
 
-/** Structure-only diagnostics: never return page text, HTML, attributes or URL query values. */
+/** Structure-only diagnostics: never return page text, HTML, link values or URL query values. */
 export function diagnosePage(document: Document, href: string) {
   const url = new URL(href);
   if (
@@ -646,11 +652,21 @@ export function diagnosePage(document: Document, href: string) {
           parents,
         };
       }),
-    listSurroundings: elements(document, JOB_LISTS)
+    listSurroundings: elements(document, `${JOB_LISTS},ul.rec-job-list`)
       .slice(0, 3)
       .map((list) => ({
         ...describe(list),
-        tail: Array.from(list.children).slice(-3).map(describe),
+        tail: Array.from(list.children)
+          .slice(-3)
+          .map((child) => ({
+            ...describe(child),
+            children: Array.from(child.children)
+              .slice(-4)
+              .map((grandchild) => ({
+                ...describe(grandchild),
+                children: Array.from(grandchild.children).slice(-4).map(describe),
+              })),
+          })),
         parent: list.parentElement
           ? {
               ...describe(list.parentElement),
