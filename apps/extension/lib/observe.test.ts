@@ -2,6 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   diagnosePage,
+  listExhausted,
   listTargets,
   localServer,
   observe,
@@ -23,6 +24,18 @@ describe('local-only pairing URL', () => {
 });
 
 describe('split-pane job identity and text boundaries', () => {
+  it('reads the observed BOSS split detail shape without styles, hidden text, publisher or address', () => {
+    document.title = '脱敏BOSS职位列表';
+    document.body.innerHTML = `<aside class="job-list-box"><div class="job-card-wrapper active"><span class="job-name">合成网络运维</span><span class="company-name">合成企业</span><a href="/job_detail/current.html">详情</a></div></aside><section class="job-detail-box"><div class="job-detail-container"><div class="job-title"><span class="job-name">合成网络运维</span><span class="salary">6-8K</span></div><div class="job-detail-body"><h3 class="title">职位描述</h3><p class="desc"><style>.SyntheticRandom { color: red; } /* 不应读取的样式 */</style><span class="SyntheticRandom">维护 Linux 服务器。</span><span hidden>不应读取的隐藏文字</span><br><span class="AnotherRandom">要求网络基础与故障排查。</span></p></div><div class="job-detail-operate">不应读取的分享操作</div><div class="job-boss-info">不应读取的招聘者姓名</div><div class="job-address">不应读取的详细地址</div><a class="more-job-btn" href="/job_detail/current.html">查看更多职位信息</a></div></section>`;
+    const result = observe(document, 'https://www.zhipin.com/web/geek/jobs')[0];
+    expect(result.title).toBe('合成网络运维');
+    expect(result.company).toBe('合成企业');
+    expect(result.platform_job_id).toBe('current');
+    expect(result.text).toContain('维护 Linux 服务器。\n要求网络基础与故障排查。');
+    expect(result.text).not.toMatch(
+      /不应读取|SyntheticRandom|AnotherRandom|color:|招聘者|详细地址/,
+    );
+  });
   it('prefers the dedicated title over its earlier title/salary container', () => {
     document.title = '合成职位列表';
     document.body.innerHTML = `<div class="job-list-box"><div class="job-card-wrapper active"><span class="job-name">合成系统运维</span><span class="company-name">合成公司</span><a href="/job_detail/current.html">职位详情</a></div></div><section class="job-detail-box"><div class="job-title"><span class="name">合成系统运维</span><span class="salary">8-12K</span></div><div class="company-name">合成公司</div><div class="job-sec-text">维护服务器和网络设备。</div></section>`;
@@ -221,6 +234,31 @@ describe('synthetic BOSS DOM, not a real compatibility claim', () => {
     expect(() => observeSelection(document, 'https://www.zhipin.com/', 'a'.repeat(30))).toThrow(
       '职位列表',
     );
+  });
+});
+
+describe('observed Zhilian list-end marker', () => {
+  it('accepts the visible direct final status even when its text is nested', () => {
+    document.title = '合成智联职位';
+    document.body.innerHTML = `<aside class="job-split-layout__left"><div class="job-list-panel"><div class="job-card">合成岗位</div><div class="job-list-panel__status job-list-panel__status--more"><div><span>没有更多了</span></div></div></div></aside>`;
+    expect(listExhausted(document, 'https://www.zhaopin.com/jobs/')).toBe(true);
+    expect(loadMoreTarget(document, 'https://www.zhaopin.com/jobs/')).toBeUndefined();
+  });
+  it.each(['加载中', '网络错误，请重试', '没有更多了，请刷新重试'])(
+    'does not treat %s as an end result',
+    (status) => {
+      document.title = '合成智联职位';
+      document.body.innerHTML = `<aside class="job-split-layout__left"><div class="job-list-panel"><div class="job-card">合成岗位</div><div class="job-list-panel__status job-list-panel__status--more">${status}</div></div></aside>`;
+      expect(listExhausted(document, 'https://www.zhaopin.com/jobs/')).toBe(false);
+      expect(loadMoreTarget(document, 'https://www.zhaopin.com/jobs/')).toBeDefined();
+    },
+  );
+  it('ignores hidden, misplaced and unrelated end text', () => {
+    document.title = '合成智联职位';
+    document.body.innerHTML = `<aside class="job-split-layout__left"><div class="job-list-panel"><div class="job-card">合成岗位</div><div hidden class="job-list-panel__status job-list-panel__status--more">没有更多了</div></div><div class="job-list-panel__status job-list-panel__status--more">没有更多了</div></aside>`;
+    expect(listExhausted(document, 'https://www.zhaopin.com/jobs/')).toBe(false);
+    expect(loadMoreTarget(document, 'https://www.zhaopin.com/jobs/')).toBeDefined();
+    expect(listExhausted(document, 'https://www.zhipin.com/web/geek/jobs')).toBe(false);
   });
 });
 

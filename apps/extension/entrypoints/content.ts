@@ -2,6 +2,7 @@ import { browser } from 'wxt/browser';
 import {
   listTargets,
   loadMoreTarget,
+  listExhausted,
   nextPageTarget,
   observe,
   observeSelection,
@@ -30,6 +31,7 @@ export default defineContentScript({
       listTargets,
       nextPageTarget,
       loadMoreTarget,
+      listExhausted,
     });
     browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (

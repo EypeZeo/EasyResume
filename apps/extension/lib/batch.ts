@@ -13,6 +13,7 @@ export type BatchAdapter = {
   listTargets(document: Document, href: string): BatchTarget[];
   nextPageTarget(document: Document, href: string): HTMLElement | undefined;
   loadMoreTarget?(document: Document, href: string): HTMLElement | undefined;
+  listExhausted?(document: Document, href: string): boolean;
 };
 
 export type BatchSnapshot = {
@@ -24,6 +25,7 @@ export type BatchSnapshot = {
   completed: number;
   targets: { key: string; title: string; company?: string }[];
   canNextPage: boolean;
+  endOfList?: boolean;
 };
 
 export type BatchStep = {
@@ -172,6 +174,7 @@ export function createBatchReader(document: Document, href: () => string, adapte
 
   function snapshot(current: Session): BatchSnapshot {
     const values = targets();
+    const endOfList = adapter.listExhausted?.(document, href()) === true;
     return {
       taskId: current.id,
       documentId,
@@ -180,9 +183,11 @@ export function createBatchReader(document: Document, href: () => string, adapte
       pageNumber: current.pageNumber,
       completed: current.completed.size,
       targets: values.map(({ key, title, company }) => ({ key, title, company })),
+      endOfList,
       canNextPage:
         current.allowNextPage &&
         current.pageNumber < current.maxPages &&
+        !endOfList &&
         (!!adapter.nextPageTarget(document, href()) ||
           !!adapter.loadMoreTarget?.(document, href())),
     };
@@ -377,6 +382,7 @@ export function createBatchReader(document: Document, href: () => string, adapte
       const started = Date.now();
       let lastValue = '';
       let stableSince = started;
+      let endedSince: number | undefined;
       let lastError = '';
       while (Date.now() - started < TIMEOUT_MS) {
         await sleep(200, current);
@@ -387,6 +393,14 @@ export function createBatchReader(document: Document, href: () => string, adapte
           const appended =
             live.length > before.length &&
             before.every((old) => live.some((item) => item.key === old.key));
+          if (
+            loadMore &&
+            fingerprint === command.pageKey &&
+            adapter.listExhausted?.(document, href()) === true
+          ) {
+            endedSince ??= Date.now();
+            if (Date.now() - endedSince >= STABLE_MS) return { ...snapshot(current), done: true };
+          } else endedSince = undefined;
           if (!live.length || fingerprint === command.pageKey || (loadMore && !appended)) {
             stableSince = Date.now();
             continue;

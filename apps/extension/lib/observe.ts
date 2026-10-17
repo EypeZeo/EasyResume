@@ -179,7 +179,8 @@ function detailLink(
 const BOSS_ROOTS =
   '.job-detail-box,.job-detail-container,.job-detail-content,.detail-content,.job-detail';
 const BOSS_TITLE = '.job-title .name,.job-name,.name h1,.job-title h1,h1';
-const BOSS_DESCRIPTION = '.job-sec-text,.job-detail-section .text,.job-description';
+const BOSS_DESCRIPTION =
+  '.job-detail-body > .desc,.job-sec-text,.job-detail-section .text,.job-description';
 const JOB_CARDS = '.job-card-box,.job-card-wrapper,.job-card-body,.job-card';
 const JOB_LISTS = '.job-list-box,.job-list-container,.job-split-layout__left,.job-list-panel';
 const TITLE_METADATA = '.salary,.job-salary';
@@ -282,14 +283,26 @@ export function loadMoreTarget(document: Document, href: string): HTMLElement | 
   const panel = Array.from(
     document.querySelectorAll('.job-split-layout__left .job-list-panel'),
   ).find(visible);
-  if (
-    !panel ||
-    /没有更多|已全部加载|到底了/.test(panel.parentElement?.lastElementChild?.textContent ?? '')
-  )
-    return;
+  if (!panel || listExhausted(document, href)) return;
   return Array.from(panel.querySelectorAll<HTMLElement>(':scope > .job-card'))
     .filter(visible)
     .at(-1);
+}
+
+/** Only the observed Zhilian list-end status proves that scrolling has finished. */
+export function listExhausted(document: Document, href: string): boolean {
+  const url = allowedPage(document, href);
+  if (boss(url)) return false;
+  const panels = Array.from(
+    document.querySelectorAll('.job-split-layout__left .job-list-panel'),
+  ).filter(visible);
+  if (panels.length !== 1) return false;
+  const status = panels[0].lastElementChild;
+  return !!(
+    status?.matches('.job-list-panel__status.job-list-panel__status--more') &&
+    visible(status) &&
+    status.textContent?.replace(/\s+/g, '') === '没有更多了'
+  );
 }
 
 function detailObservation(
@@ -464,6 +477,23 @@ export function diagnosePage(document: Document, href: string) {
       .filter(outsideCard)
       .slice(0, 6)
       .map(describe),
+    listSurroundings: elements(document, JOB_LISTS)
+      .slice(0, 3)
+      .map((list) => ({
+        ...describe(list),
+        tail: Array.from(list.children).slice(-3).map(describe),
+        parent: list.parentElement
+          ? {
+              ...describe(list.parentElement),
+              children: Array.from(list.parentElement.children)
+                .slice(-6)
+                .map((child) => ({
+                  ...describe(child),
+                  children: Array.from(child.children).slice(-4).map(describe),
+                })),
+            }
+          : undefined,
+      })),
   };
 }
 

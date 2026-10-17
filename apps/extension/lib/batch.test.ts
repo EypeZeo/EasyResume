@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createBatchReader, type BatchAdapter, type BatchSnapshot } from './batch';
-import type { Observation } from './observe';
+import { listExhausted, type Observation } from './observe';
 
 const url = 'https://www.zhipin.com/web/geek/job-recommend';
 let href = url;
@@ -287,6 +287,78 @@ describe('bounded readonly batch steps on synthetic DOM', () => {
     expect(test.scroll).toHaveBeenCalledOnce();
     expect(test.clicks()).toBe(0);
     await expect(test.reader.step(job(snapshot))).rejects.toThrow('新增职位超时');
+  });
+
+  it('completes when the observed end marker arrives after scrolling without increasing the page count', async () => {
+    const test = scrollingFixture();
+    test.adapter.listExhausted = listExhausted;
+    test.scroll.mockImplementation(() =>
+      setTimeout(
+        () =>
+          test.panel.insertAdjacentHTML(
+            'beforeend',
+            '<div class="job-list-panel__status job-list-panel__status--more"><div><span>没有更多了</span></div></div>',
+          ),
+        600,
+      ),
+    );
+    const snapshot = test.reader.prepare('scroll', { allowNextPage: true });
+    const pending = test.reader.step({ ...snapshot, kind: 'next_page' });
+    await vi.advanceTimersByTimeAsync(3200);
+    const result = await pending;
+    expect(result.done).toBe(true);
+    expect(result.endOfList).toBe(true);
+    expect(result.pageNumber).toBe(1);
+    expect(result.pageKey).toBe(snapshot.pageKey);
+    expect(result.canNextPage).toBe(false);
+    expect(result.targets).toHaveLength(2);
+    expect(test.scroll).toHaveBeenCalledOnce();
+    expect(test.clicks()).toBe(0);
+  });
+
+  it('keeps newly appended final-page cards available even when an end marker arrives with them', async () => {
+    const test = scrollingFixture();
+    test.adapter.listExhausted = listExhausted;
+    test.scroll.mockImplementation(() =>
+      setTimeout(() => {
+        const card = test.panel.lastElementChild!.cloneNode(true) as HTMLElement;
+        card.dataset.key = 'c';
+        test.panel.append(card);
+        test.panel.insertAdjacentHTML(
+          'beforeend',
+          '<div class="job-list-panel__status job-list-panel__status--more">没有更多了</div>',
+        );
+      }, 600),
+    );
+    const snapshot = test.reader.prepare('scroll', { allowNextPage: true });
+    const pending = test.reader.step({ ...snapshot, kind: 'next_page' });
+    await vi.advanceTimersByTimeAsync(3200);
+    const result = await pending;
+    expect(result.done).not.toBe(true);
+    expect(result.endOfList).toBe(true);
+    expect(result.pageNumber).toBe(2);
+    expect(result.targets).toHaveLength(3);
+  });
+
+  it('pauses instead of completing when the list reports a load error', async () => {
+    const test = scrollingFixture();
+    test.adapter.listExhausted = listExhausted;
+    test.scroll.mockImplementation(() =>
+      setTimeout(
+        () =>
+          test.panel.insertAdjacentHTML(
+            'beforeend',
+            '<div class="job-list-panel__status job-list-panel__status--more">网络错误，请重试</div>',
+          ),
+        600,
+      ),
+    );
+    const snapshot = test.reader.prepare('scroll', { allowNextPage: true });
+    const rejection = expect(test.reader.step({ ...snapshot, kind: 'next_page' })).rejects.toThrow(
+      '新增职位超时',
+    );
+    await vi.advanceTimersByTimeAsync(15200);
+    await rejection;
   });
 
   it('does not treat a replaced list as a successful appended page', async () => {

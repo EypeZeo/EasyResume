@@ -509,6 +509,53 @@ describe('paused batch page scope', () => {
   });
 });
 
+describe('observed list exhaustion reporting', () => {
+  it('completes a scrolling end result without counting a nonexistent page', async () => {
+    const zhilian = 'https://www.zhaopin.com/jobs/?pageMode=recommend';
+    tabs = [makeTab(1, zhilian, true)];
+    const snapshot = {
+      taskId: 'task',
+      documentId: 'document',
+      href: zhilian,
+      pageKey: 'one',
+      pageNumber: 1,
+      completed: 20,
+      targets: [],
+      canNextPage: true,
+      endOfList: false,
+    };
+    mocks.sendMessage.mockImplementation(async (_id, message) => {
+      if (message.type === 'PAGE_STATUS')
+        return {
+          page: { platform: 'zhilian', kind: 'list' },
+          entries: [],
+          canRead: true,
+          listCount: 20,
+        };
+      if (message.type === 'BATCH_PREPARE') return { ...snapshot, taskId: message.taskId };
+      if (message.type === 'BATCH_STEP')
+        return {
+          ...snapshot,
+          taskId: message.taskId,
+          canNextPage: false,
+          endOfList: true,
+          done: true,
+        };
+      return {};
+    });
+    await load();
+    expect(
+      (await send({ type: 'BATCH_START', maxJobs: 50, maxPages: 3, autoPage: true })).status,
+    ).toBe('running');
+    for (let index = 0; index < 30; index++) await Promise.resolve();
+    expect(await send({ type: 'BATCH_STATUS' })).toMatchObject({
+      status: 'completed',
+      pages: 1,
+      message: '没有更多职位，本次批量读取已完成',
+    });
+  });
+});
+
 describe('renderer response deadlines', () => {
   it('bounds an unresponsive PAGE_STATUS and releases navigation for the next explicit attempt', async () => {
     vi.useFakeTimers();
@@ -524,13 +571,23 @@ describe('renderer response deadlines', () => {
     expect(await send({ type: 'LOCATE_JOB_PAGE' })).toMatchObject({ located: true, tabId: 1 });
   });
 
-  it('enforces one total twelve-second navigation budget across slow capability polls', async () => {
+  it('preserves the last diagnostics across the total twelve-second navigation budget', async () => {
     vi.useFakeTimers();
+    const diagnostics = {
+      pagePath: '/web/geek/jobs',
+      selectors: { '.job-detail-body > .desc': { total: 1, visible: 1 } },
+    };
     mocks.sendMessage.mockImplementation(
       () =>
         new Promise((resolve) =>
           setTimeout(
-            () => resolve({ ...status(list), canRead: false, message: '职位详情尚未加载完成' }),
+            () =>
+              resolve({
+                ...status(list),
+                canRead: false,
+                message: '当前职位页面布局暂未识别',
+                diagnostics,
+              }),
             1500,
           ),
         ),
@@ -539,7 +596,7 @@ describe('renderer response deadlines', () => {
     const started = Date.now();
     const result = send({ type: 'LOCATE_JOB_PAGE' });
     await vi.advanceTimersByTimeAsync(12000);
-    expect((await result).error).toContain('超时');
+    expect(await result).toMatchObject({ error: expect.stringContaining('超时'), diagnostics });
     expect(Date.now() - started).toBe(12000);
     mocks.sendMessage.mockResolvedValue(status(list));
     expect(await send({ type: 'LOCATE_JOB_PAGE' })).toMatchObject({ located: true });

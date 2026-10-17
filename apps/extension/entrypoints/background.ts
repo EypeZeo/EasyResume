@@ -56,7 +56,12 @@ async function bounded<T>(
   }
 }
 
-type NavigationLifetime = { deadline: number; cancelled: boolean; message?: string };
+type NavigationLifetime = {
+  deadline: number;
+  cancelled: boolean;
+  message?: string;
+  diagnostics?: unknown;
+};
 
 type Task = {
   status: 'idle' | 'running' | 'paused' | 'completed' | 'stopped' | 'error';
@@ -202,6 +207,7 @@ export default defineBackground(() => {
         navigation.cancelled = true;
         return new PageReadError(
           `${navigation.message || '招聘页面定位'}。等待页面超时，请检查后重试；不会重复跳转`,
+          navigation.diagnostics,
         );
       });
     } finally {
@@ -216,7 +222,10 @@ export default defineBackground(() => {
   ) {
     const checkNavigation = () => {
       if (navigation.cancelled || Date.now() >= navigation.deadline)
-        throw new PageReadError('招聘页面定位超时，请检查后重试；不会重复跳转');
+        throw new PageReadError(
+          '招聘页面定位超时，请检查后重试；不会重复跳转',
+          navigation.diagnostics,
+        );
     };
     const pageStatus = (tabId: number) => {
       checkNavigation();
@@ -363,7 +372,10 @@ export default defineBackground(() => {
       } catch (error) {
         if (error instanceof PageCommandTimeout || navigation.cancelled) throw error;
         lastMessage = errorText(error);
-        if (error instanceof PageReadError) lastDiagnostics = error.diagnostics;
+        if (error instanceof PageReadError && error.diagnostics !== undefined) {
+          lastDiagnostics = error.diagnostics;
+          navigation.diagnostics = error.diagnostics;
+        }
         continue;
       }
       if (['verification', 'login', 'chat'].includes(page.page?.kind))
@@ -381,7 +393,10 @@ export default defineBackground(() => {
       lastMessage =
         page.message ??
         (page.page?.kind === 'home' ? '招聘网站返回了首页' : '职位详情尚未加载完成');
-      lastDiagnostics = page.diagnostics;
+      if (page.diagnostics !== undefined) {
+        lastDiagnostics = page.diagnostics;
+        navigation.diagnostics = page.diagnostics;
+      }
       navigation.message = lastMessage;
     }
     throw new PageReadError(
@@ -491,7 +506,9 @@ export default defineBackground(() => {
             status: 'completed',
             message: target
               ? '已达到读取数量上限'
-              : '当前可读取的岗位已完成；没有可用的下一页时不会盲目翻页',
+              : snapshot.endOfList
+                ? '没有更多职位，本次批量读取已完成'
+                : '当前可读取的岗位已完成；没有可用的下一页时不会盲目翻页',
           };
           await persist();
           return;
@@ -544,7 +561,12 @@ export default defineBackground(() => {
             return;
           }
         }
-        if (step.done) task = { ...task, status: 'completed', message: '本次批量读取已完成' };
+        if (step.done)
+          task = {
+            ...task,
+            status: 'completed',
+            message: step.endOfList ? '没有更多职位，本次批量读取已完成' : '本次批量读取已完成',
+          };
         await persist();
       }
     } catch (error) {
