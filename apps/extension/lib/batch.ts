@@ -49,6 +49,7 @@ type Session = {
 };
 
 const INTERVAL_MS = 3000;
+const ZHILIAN_INTERVAL_MS = 5000;
 const TIMEOUT_MS = 15000;
 const STABLE_MS = 1000;
 const DANGEROUS_ACTION =
@@ -91,6 +92,10 @@ export function createBatchReader(document: Document, href: () => string, adapte
   let session: Session | undefined;
   let busy = false;
   let lastClick = -Infinity;
+  const actionInterval = () =>
+    ['www.zhaopin.com', 'sou.zhaopin.com', 'jobs.zhaopin.com'].includes(new URL(href()).hostname)
+      ? ZHILIAN_INTERVAL_MS
+      : INTERVAL_MS;
 
   const cancel = (reason = '已暂停批量读取') => {
     if (!session) return;
@@ -350,6 +355,33 @@ export function createBatchReader(document: Document, href: () => string, adapte
     return observation;
   }
 
+  function emptySelectedZhilianDetail(target: BatchTarget, values: BatchTarget[]): boolean {
+    if (
+      !['www.zhaopin.com', 'sou.zhaopin.com', 'jobs.zhaopin.com'].includes(new URL(href()).hostname)
+    )
+      return false;
+    const panels = Array.from(
+      document.querySelectorAll('.job-split-layout__left .job-list-panel'),
+    ).filter(visible);
+    const roots = Array.from(document.querySelectorAll('.job-detail-modules')).filter(visible);
+    if (
+      panels.length !== 1 ||
+      roots.length !== 1 ||
+      !target.element.matches('.job-card') ||
+      target.element.closest('.job-split-layout__left .job-list-panel') !== panels[0] ||
+      roots[0].childElementCount !== 0 ||
+      roots[0].textContent?.trim()
+    )
+      return false;
+    const selectedTargets = values.filter((item) => selected(item.element) === true);
+    if (selectedTargets.length !== 1 || selectedTargets[0].element !== target.element) return false;
+    return !Array.from(
+      document.querySelectorAll(
+        '[aria-busy="true"],[role="progressbar"],.loading,.is-loading,.skeleton',
+      ),
+    ).some(visible);
+  }
+
   async function step(
     command: BatchStep,
   ): Promise<BatchSnapshot & { observation?: Observation; done?: boolean }> {
@@ -362,9 +394,11 @@ export function createBatchReader(document: Document, href: () => string, adapte
       throw new Error('职位列表已变化，请重新开始');
     if (current.completed.size >= current.maxItems) return { ...snapshot(current), done: true };
     busy = true;
+    const stepStarted = Date.now();
     try {
-      await sleep(Math.max(0, INTERVAL_MS - (Date.now() - lastClick)), current);
+      await sleep(Math.max(0, actionInterval() - (Date.now() - lastClick)), current);
       safety(current);
+      if (Date.now() - stepStarted >= TIMEOUT_MS) throw new Error('等待职位详情超时，已暂停');
       if (snapshot(current).pageKey !== command.pageKey)
         throw new Error('职位列表已变化，请重新开始');
       const before = targets();
@@ -404,13 +438,18 @@ export function createBatchReader(document: Document, href: () => string, adapte
       if (loadMore) safeLoadMore(loadMore, before);
       else if (!alreadySelected) safeClick(element, command.kind === 'next_page');
       const started = Date.now();
+      let lastReadActionAt = started;
+      let reselectionUsed = false;
+      let emptySince: number | undefined;
+      let sawCompleteResult = baseline !== undefined && baseline !== '';
       let lastValue = '';
       let stableSince = started;
       let endedSince: number | undefined;
       let lastError = '';
-      while (Date.now() - started < TIMEOUT_MS) {
+      while (Date.now() - stepStarted < TIMEOUT_MS) {
         await sleep(200, current);
         safety(current, command.kind === 'next_page');
+        if (Date.now() - stepStarted >= TIMEOUT_MS) break;
         const live = targets();
         if (command.kind === 'next_page') {
           const fingerprint = pageKey(live);
@@ -451,8 +490,50 @@ export function createBatchReader(document: Document, href: () => string, adapte
         if (!observation) {
           stableSince = Date.now();
           lastValue = '';
+          const liveTarget = live.find((item) => item.key === expected!.key);
+          const unchangedTarget =
+            liveTarget &&
+            liveTarget.element === expected!.element &&
+            normalize(liveTarget.title) === normalize(expected!.title) &&
+            normalize(liveTarget.company ?? '') === normalize(expected!.company ?? '') &&
+            liveTarget.platform_job_id === expected!.platform_job_id;
+          if (
+            !reselectionUsed &&
+            !sawCompleteResult &&
+            unchangedTarget &&
+            emptySelectedZhilianDetail(liveTarget, live)
+          ) {
+            emptySince ??= Date.now();
+            if (
+              Date.now() - started >= ZHILIAN_INTERVAL_MS &&
+              Date.now() - emptySince >= STABLE_MS &&
+              Date.now() - lastClick >= actionInterval() &&
+              Date.now() - stepStarted <= TIMEOUT_MS - INTERVAL_MS
+            ) {
+              safety(current);
+              const finalTargets = targets();
+              if (pageKey(finalTargets) !== command.pageKey)
+                throw new Error('读取期间职位列表发生变化，请重新开始');
+              const finalTarget = finalTargets.find((item) => item.key === expected!.key);
+              if (
+                finalTarget &&
+                finalTarget.element === liveTarget.element &&
+                normalize(finalTarget.title) === normalize(expected!.title) &&
+                normalize(finalTarget.company ?? '') === normalize(expected!.company ?? '') &&
+                finalTarget.platform_job_id === expected!.platform_job_id &&
+                emptySelectedZhilianDetail(finalTarget, finalTargets)
+              ) {
+                reselectionUsed = true;
+                safeClick(finalTarget.element, false);
+                lastReadActionAt = Date.now();
+                emptySince = undefined;
+              }
+            }
+          } else emptySince = undefined;
           continue;
         }
+        sawCompleteResult = true;
+        emptySince = undefined;
         const value = JSON.stringify(observation);
         if (!alreadySelected && value === baseline) {
           stableSince = Date.now();
@@ -462,7 +543,7 @@ export function createBatchReader(document: Document, href: () => string, adapte
           lastValue = value;
           stableSince = Date.now();
         }
-        if (Date.now() - stableSince >= STABLE_MS && Date.now() - started >= INTERVAL_MS) {
+        if (Date.now() - stableSince >= STABLE_MS && Date.now() - lastReadActionAt >= INTERVAL_MS) {
           safety(current);
           current.completed.add(expected!.key);
           return {

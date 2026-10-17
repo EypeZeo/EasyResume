@@ -308,13 +308,11 @@ export default defineBackground(() => {
       else if (homes.length === 1) target = homes[0];
       else if (homes.length > 1)
         throw new PageSelectionError(
-          homes.map((tab) => ({
+          homes.map((tab, index) => ({
             kind: 'tab',
             tabId: tab.id,
             platform: classifyRecruitingPage(tab.url).platform,
-            title:
-              tab.title?.trim().slice(0, 120) ||
-              (classifyRecruitingPage(tab.url).platform === 'boss' ? 'BOSS 首页' : '智联首页'),
+            title: `${classifyRecruitingPage(tab.url).platform === 'boss' ? 'BOSS直聘' : '智联招聘'} · 首页 · 选项 ${index + 1}`,
           })),
         );
       else

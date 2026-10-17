@@ -114,3 +114,41 @@
 
 放行前使用合成与授权语料覆盖：同校多段教育、同公司多次任职、重复绘制的 PDF、只有年份、在读及否定技能；验证跨经历字段不会互相借用。用户修正、取消、刷新及失败重试后不得静默丢失内容。准确率和完成时间仍应单独实测，不能以结构校验通过代替。
 
+## 智联分栏读取补充：2026-10-17
+
+本节针对左右分栏、空详情、批量继续及末尾停止补查公开实现。仅核查源码和作者记录；未运行这些工具，第三方的实测记录不等于 EasyResume 已在当前页面通过验收。
+
+### 可参考的真实 DOM 实现
+
+优先参考 [WeZaoChuan/job-apply-helper-cn](https://github.com/WeZaoChuan/job-apply-helper-cn/tree/3ec470c8c4d6bda8a6f17a63056a57fde5921881)，固定提交 `3ec470c8c4d6bda8a6f17a63056a57fde5921881`，提交日期 2026-09-14。[许可正文为 MIT](https://github.com/WeZaoChuan/job-apply-helper-cn/blob/3ec470c8c4d6bda8a6f17a63056a57fde5921881/LICENSE)；若以后移植代码，仍需保留原版权和许可。本轮没有移植。
+
+与仅有平台支持声明的项目不同，该仓库确实包含智联分栏适配：
+
+- [选择器及详情链接提取](https://github.com/WeZaoChuan/job-apply-helper-cn/blob/3ec470c8c4d6bda8a6f17a63056a57fde5921881/extension/src/zhaopin.js#L13-L71)：区分卡片和右侧面板，职位链接从详情面板取得。
+- [选卡与有界等待](https://github.com/WeZaoChuan/job-apply-helper-cn/blob/3ec470c8c4d6bda8a6f17a63056a57fde5921881/extension/src/zhaopin.js#L75-L96)、[标题读取与面板检查](https://github.com/WeZaoChuan/job-apply-helper-cn/blob/3ec470c8c4d6bda8a6f17a63056a57fde5921881/extension/src/zhaopin.js#L120-L162)：滚动到卡片再点击；标题优先读可访问名称属性，避免截断测量节点干扰。
+- [作者的结构勘察记录](https://github.com/WeZaoChuan/job-apply-helper-cn/blob/3ec470c8c4d6bda8a6f17a63056a57fde5921881/%E5%8B%98%E5%AF%9F%E8%AE%B0%E5%BD%95-%E9%80%89%E6%8B%A9%E5%99%A8.md#L9-L25)：报告卡片选中状态和右侧链接同步变化，列表通过滚动追加。这是作者于 2026-09-10 的记录，不能外推到全部智联页面形态。
+
+可借鉴的是“卡片身份 → 选中状态 → 新详情身份 → 正文”的检查顺序。该实现仅按标题前缀等待，并按卡片序号和标题缓存；同名岗位或列表重排可能关联错误，不能照搬。[加载更多](https://github.com/WeZaoChuan/job-apply-helper-cn/blob/3ec470c8c4d6bda8a6f17a63056a57fde5921881/extension/src/zhaopin.js#L225-L237)只按卡片数量增长判定，不能处理等量替换或虚拟列表。
+
+[批量循环](https://github.com/WeZaoChuan/job-apply-helper-cn/blob/3ec470c8c4d6bda8a6f17a63056a57fde5921881/extension/src/core.js#L337-L440)有停止标志和批次上限，但等待期间未贯穿取消；停止恰好发生在翻页前等待中，仍可能触发下一次加载。无增长也直接称为末尾。其投递和成功记账逻辑不纳入采纳范围。
+
+### 交叉核查与许可限制
+
+[BossHunter 的智联实现](https://github.com/shengjidaguai-china/BossHunter/blob/50bbbbe7e15932fa33b5f6b2969fae77ffa197e4/src/bosshunter/collection/platforms/zhilian.py#L949-L982)，固定提交 `50bbbbe7e15932fa33b5f6b2969fae77ffa197e4`（2026-10-12），明确处理了 SPA 文档已加载而旧列表仍存在的情况，联合核对搜索输入、路由和列表变化。其[详情提取](https://github.com/shengjidaguai-china/BossHunter/blob/50bbbbe7e15932fa33b5f6b2969fae77ffa197e4/src/bosshunter/collection/platforms/zhilian.py#L270-L310)也包含当前卡片和右侧内容；这支持“不能以页面加载完成证明新详情就绪”的设计判断，但不证明能解决当前故障。
+
+该快照的 [LICENSE 是 PolyForm Noncommercial](https://github.com/shengjidaguai-china/BossHunter/blob/50bbbbe7e15932fa33b5f6b2969fae77ffa197e4/LICENSE)，不是 MIT；同时存在另一条私有接口路径。本项目不移植代码或该接入路径。
+
+另核查 [loks666/get_jobs 的智联实现](https://github.com/loks666/get_jobs/blob/a78db87b1da539120eeb843e6ab2fc36998bc2c0/src/main/java/com/getjobs/worker/zhilian/ZhiLian.java#L156-L208)，固定提交 `a78db87b1da539120eeb843e6ab2fc36998bc2c0`（2026-10-16）。它仍使用另一种列表和分页控件，不能作为当前分栏滚动的直接依据；[当前许可同为非商业许可](https://github.com/loks666/get_jobs/blob/a78db87b1da539120eeb843e6ab2fc36998bc2c0/LICENSE)，不能沿用旧版本 MIT 印象判断当前源码。
+
+### 对当前故障的判断边界与最小验证
+
+未找到可以证实智联正常点击出现 `3000ms timeout` 的根因或现成修复。以下是需要真实页面区分的假设，并非已确认结论：
+
+| 现象 | 需要观察的证据 | 本项目应如何处理 |
+|---|---|---|
+| 左卡已变，右侧为空或仍是上一岗位 | 选中卡片、右侧链接及正文是否分别更新 | 仅等待有界的身份一致和正文就绪，不保存旧详情 |
+| 人工正常点击也出现相同超时 | 错误是否由站点自身产生；无扩展读取时能否重现 | 明确记录平台详情加载失败；延长扩展等待不能宣称修复站点请求 |
+| 滚动后没有新增岗位 | 实际滚动区域、卡片标识变化、加载或结束标记 | 无新增且无结束证据时暂停，不能把超时当成没有更多 |
+
+后续只建议两项不扩大权限的改进：其一，保留卡片、选中和详情的分阶段诊断，遇到空详情给出返回平台核对的下一步；其二，在现有批量任务中区分新增、等量替换、停滞和真实结束，取消后禁止晚到结果继续滚动或保存。两者均需真实页面验证同名岗位切换、慢详情、空详情、列表重排、加载中停止与末尾；成功标准包含正文与对象一致、无重复保存、无停止后追加交互。不能用第三方截图或本地夹具替代这些证据。
+

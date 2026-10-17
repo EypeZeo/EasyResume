@@ -89,6 +89,80 @@ type TabChoice = {
   title: string;
 };
 
+const BOSS_CITY_NAMES: Record<string, string> = {
+  '100010000': '全国',
+  '101010100': '北京',
+  '101020100': '上海',
+  '101280100': '广州',
+  '101280600': '深圳',
+  '101210100': '杭州',
+  '101180100': '郑州',
+  '101030100': '天津',
+  '101040100': '重庆',
+  '101270100': '成都',
+  '101200100': '武汉',
+  '101110100': '西安',
+};
+
+function singleParameter(url: URL, keys: string[]): string {
+  for (const key of keys) {
+    const values = url.searchParams.getAll(key);
+    if (values.length === 1 && values[0].trim()) return values[0].trim();
+  }
+  return '';
+}
+
+/** Display only short search terms; URL metadata and opaque values never become labels. */
+function readableSearch(value: string): string {
+  const text = value.normalize('NFKC').replace(/\s+/g, ' ').trim();
+  if (
+    !text ||
+    text.length > 36 ||
+    !/^[\p{L}\p{N} .+#()\-·]+$/u.test(text) ||
+    /\d{6,}|[a-zA-Z0-9_-]{20,}|(?:token|session|cookie|secret|password|bearer|authorization|账号|密码|验证码)/i.test(
+      text,
+    )
+  )
+    return '';
+  return text;
+}
+
+function recruitingTabTitle(href: string, page: RecruitingPage): string {
+  const url = new URL(href);
+  const keyword = readableSearch(
+    singleParameter(url, page.platform === 'boss' ? ['query'] : ['kw', 'keyword', 'query']),
+  );
+  const recommended =
+    page.kind === 'list' &&
+    (/(?:^|\/)(?:recommend|job-recommend)(?:\/|$)/.test(url.pathname) ||
+      url.searchParams.get('pageMode') === 'recommend');
+  const kind =
+    page.kind === 'detail'
+      ? '职位详情'
+      : recommended
+        ? '推荐职位'
+        : keyword
+          ? '搜索职位'
+          : '职位列表';
+  const labels = [page.platform === 'boss' ? 'BOSS直聘' : '智联招聘', kind];
+  if (page.kind === 'detail') return labels.join(' · ');
+  if (keyword) labels.push(keyword);
+  const city = singleParameter(url, page.platform === 'boss' ? ['city'] : ['city', 'jl']);
+  if (city) {
+    const knownCity =
+      page.platform === 'boss' && Object.hasOwn(BOSS_CITY_NAMES, city)
+        ? BOSS_CITY_NAMES[city]
+        : page.platform === 'zhilian' && city === '719' && singleParameter(url, ['jl']) === '719'
+          ? '郑州'
+          : undefined;
+    labels.push(knownCity ?? (Object.values(BOSS_CITY_NAMES).includes(city) ? city : '已选地区'));
+  }
+  const pageNumber = singleParameter(url, ['page']);
+  if (/^[1-9]\d{0,2}$/.test(pageNumber)) labels.push(`第 ${Number(pageNumber)} 页`);
+  if (page.platform === 'boss' && singleParameter(url, ['salary'])) labels.push('已选薪资范围');
+  return labels.join(' · ');
+}
+
 export type RecruitingTabResolution =
   | { state: 'ready' | 'activate'; choice: TabChoice }
   | { state: 'choose'; choices: TabChoice[] }
@@ -135,12 +209,20 @@ export function resolveRecruitingTab(
         tabId: tab.id,
         platform: page.platform,
         kind: page.kind,
-        title:
-          tab.title?.trim().slice(0, 120) ||
-          (page.platform === 'boss' ? 'BOSS 职位页' : '智联职位页'),
+        title: recruitingTabTitle(tab.url!, page),
       },
     ];
   });
+  const duplicateCounts = new Map<string, number>();
+  for (const choice of choices)
+    duplicateCounts.set(choice.title, (duplicateCounts.get(choice.title) ?? 0) + 1);
+  const duplicateIndexes = new Map<string, number>();
+  for (const choice of choices) {
+    if ((duplicateCounts.get(choice.title) ?? 0) < 2) continue;
+    const index = (duplicateIndexes.get(choice.title) ?? 0) + 1;
+    duplicateIndexes.set(choice.title, index);
+    choice.title += `（选项 ${index}）`;
+  }
   const currentChoice = choices.find((choice) => choice.tabId === context.activeTabId);
   if (currentChoice) return { state: 'ready', choice: currentChoice };
   if (choices.length === 1) return { state: 'activate', choice: choices[0] };

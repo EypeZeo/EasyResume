@@ -124,3 +124,48 @@ it('does not describe changed existing jobs as newly added jobs', async () => {
   await click('保存读取的职位');
   expect(host.textContent).toContain('新增 0 个职位，跳过重复 1 个，2 个职位有变化待核对');
 });
+it('keeps completed batch counts attached to their actual platform when the website changes', async () => {
+  respond = () => ({
+    status: 'completed',
+    saved: 3,
+    visited: 4,
+    pages: 1,
+    scope: { platform: 'boss', href: 'https://www.zhipin.com/web/geek/jobs?token=private-token' },
+  });
+  await click('检查批量任务');
+  const select = host.querySelector('select');
+  await act(async () => {
+    select.value = 'zhilian';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  expect(select.value).toBe('zhilian');
+  const result = host.querySelector('[data-batch-platform]');
+  expect(result.dataset.batchPlatform).toBe('boss');
+  expect(result.textContent).toContain('BOSS直聘 · 批量结果');
+  expect(result.textContent).toContain('新增 3 条');
+  expect(result.textContent).not.toContain('智联');
+  expect(host.textContent).not.toContain('private-token');
+});
+it('does not guess the platform for an older batch result without scope', async () => {
+  respond = () => ({ status: 'stopped', saved: 2, visited: 2, pages: 1 });
+  await click('检查批量任务');
+  expect(host.querySelector('[data-batch-platform]').textContent).toContain(
+    '来源未记录 · 批量结果',
+  );
+});
+it('renders distinct safe tab labels and retries the chosen page only', async () => {
+  respond = ({ tabId }) =>
+    tabId === undefined
+      ? {
+          code: 'NEEDS_SELECTION',
+          error: '请选择页面',
+          choices: [
+            { tabId: 17, title: '智联招聘 · 推荐职位' },
+            { tabId: 18, title: '智联招聘 · 搜索职位 · Linux · 郑州' },
+          ],
+        }
+      : { observations: [{ title: '合成岗位' }] };
+  await click('读取浏览器当前职位');
+  await click('智联招聘 · 搜索职位 · Linux · 郑州');
+  expect(commands.at(-1)).toMatchObject({ type: 'READ', tabId: 18 });
+});

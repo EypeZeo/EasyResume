@@ -116,6 +116,58 @@ function bossScrollingFixture() {
   return { ...test, panel, container, loading, scroll, click };
 }
 
+function emptyZhilianFixture() {
+  const test = scrollingFixture();
+  const module = document.createElement('section');
+  module.className = 'job-detail-modules';
+  document.body.append(module);
+  let completeKey = '';
+  let onClick: (key: string, count: number) => void = () => {};
+  let clickCount = 0;
+  const clickTimes: number[] = [];
+  for (const card of test.panel.querySelectorAll<HTMLElement>('.card')) {
+    card.addEventListener('click', () => {
+      clickCount++;
+      clickTimes.push(Date.now());
+      completeKey = '';
+      module.replaceChildren();
+      onClick(card.dataset.key!, clickCount);
+    });
+  }
+  test.adapter.observe = () => {
+    if (!completeKey) return [];
+    const card = test.panel.querySelector<HTMLElement>(`[data-key="${completeKey}"]`)!;
+    return [
+      {
+        protocol: 1,
+        url: href,
+        title: card.querySelector('.title')!.textContent!,
+        company: card.querySelector('.company')!.textContent!,
+        text: `完整智联描述 ${completeKey}`,
+        platform_job_id: completeKey,
+        city: '',
+        page_kind: 'detail',
+        employment_type: 'unknown',
+        recruitment_type: 'unknown',
+        blocked: false,
+      },
+    ];
+  };
+  return {
+    ...test,
+    module,
+    clickCount: () => clickCount,
+    clickTimes,
+    onClick(callback: typeof onClick) {
+      onClick = callback;
+    },
+    complete(key: string) {
+      completeKey = key;
+      module.innerHTML = '<p>已加载的完整职位内容</p>';
+    },
+  };
+}
+
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date('2026-10-17T04:00:00Z'));
@@ -612,5 +664,102 @@ describe('bounded readonly batch steps on synthetic DOM', () => {
     const rejection = expect(test.reader.step(job(snapshot))).rejects.toThrow('超时');
     await vi.advanceTimersByTimeAsync(15200);
     await rejection;
+  });
+});
+
+describe('one bounded reselection of an empty selected Zhilian detail', () => {
+  it('waits at least five seconds, reselects the same card once and accepts only its settled result', async () => {
+    const test = emptyZhilianFixture();
+    const started = Date.now();
+    test.onClick((key, count) => {
+      if (count === 2) setTimeout(() => test.complete(key), 1000);
+    });
+    const snapshot = test.reader.prepare('recover');
+    const pending = test.reader.step(job(snapshot));
+    await vi.advanceTimersByTimeAsync(4800);
+    expect(test.clickCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(test.clickCount()).toBe(2);
+    expect(test.clickTimes).toEqual([started, started + 5000]);
+    await vi.advanceTimersByTimeAsync(3200);
+    expect(await pending).toMatchObject({
+      observation: { platform_job_id: 'a', text: '完整智联描述 a' },
+      completed: 1,
+    });
+    expect(document.querySelector('.card.active')?.getAttribute('data-key')).toBe('a');
+  });
+
+  it('never reselects a third time and still pauses at the original fifteen-second total deadline', async () => {
+    const test = emptyZhilianFixture();
+    const snapshot = test.reader.prepare('still_empty');
+    const rejection = expect(test.reader.step(job(snapshot))).rejects.toThrow('超时');
+    await vi.advanceTimersByTimeAsync(15000);
+    await rejection;
+    expect(test.clickCount()).toBe(2);
+    await expect(test.reader.step(job(snapshot))).rejects.toThrow('超时');
+    expect(test.clickCount()).toBe(2);
+  });
+
+  it.each(['stop', 'hidden', 'user', 'challenge', 'list', 'selection'] as const)(
+    'does not reselect after %s changes during the wait',
+    async (change) => {
+      const test = emptyZhilianFixture();
+      const snapshot = test.reader.prepare('cancel_recovery');
+      const rejection = expect(test.reader.step(job(snapshot))).rejects.toThrow();
+      await vi.advanceTimersByTimeAsync(4000);
+      if (change === 'stop') test.reader.stop('cancel_recovery');
+      if (change === 'hidden') {
+        Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+        document.dispatchEvent(new Event('visibilitychange'));
+      }
+      if (change === 'user') {
+        const click = new MouseEvent('click', { bubbles: true });
+        Object.defineProperty(click, 'isTrusted', { value: true });
+        document.body.dispatchEvent(click);
+      }
+      if (change === 'challenge')
+        document.body.insertAdjacentHTML('beforeend', '<div id="captcha">请完成验证</div>');
+      if (change === 'list')
+        test.panel.querySelector<HTMLElement>('[data-key="a"]')!.dataset.key = 'changed';
+      if (change === 'selection') {
+        test.panel.querySelector('[data-key="a"]')!.classList.remove('active');
+        test.panel.querySelector('[data-key="b"]')!.classList.add('active');
+      }
+      await vi.advanceTimersByTimeAsync(11200);
+      await rejection;
+      expect(test.clickCount()).toBe(1);
+    },
+  );
+
+  it.each(['loading', 'old-detail'] as const)('does not reselect a %s state', async (state) => {
+    const test = emptyZhilianFixture();
+    if (state === 'loading') test.module.setAttribute('aria-busy', 'true');
+    else test.module.innerHTML = '<p>其他职位的旧描述，不能当作本条空白重试</p>';
+    test.onClick(() => {
+      if (state === 'old-detail') test.module.innerHTML = '<p>其他职位的旧描述</p>';
+    });
+    const snapshot = test.reader.prepare('no_recovery');
+    const rejection = expect(test.reader.step(job(snapshot))).rejects.toThrow('超时');
+    await vi.advanceTimersByTimeAsync(15000);
+    await rejection;
+    expect(test.clickCount()).toBe(1);
+  });
+
+  it('keeps complete details free of recovery clicks and spaces consecutive Zhilian actions by five seconds', async () => {
+    const test = emptyZhilianFixture();
+    test.onClick((key) => test.complete(key));
+    const snapshot = test.reader.prepare('spacing');
+    const first = test.reader.step(job(snapshot));
+    await vi.advanceTimersByTimeAsync(3200);
+    const firstResult = await first;
+    const second = test.reader.step(job(firstResult, 'b'));
+    await vi.advanceTimersByTimeAsync(1600);
+    expect(test.clickCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(test.clickCount()).toBe(2);
+    expect(test.clickTimes[1] - test.clickTimes[0]).toBe(5000);
+    await vi.advanceTimersByTimeAsync(3200);
+    expect((await second).observation?.platform_job_id).toBe('b');
+    expect(test.clickCount()).toBe(2);
   });
 });

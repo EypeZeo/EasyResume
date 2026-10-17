@@ -223,6 +223,30 @@ describe('recruitment navigation integration', () => {
     expect(mocks.sendMessage.mock.calls.at(-1)).toEqual([3, { type: 'COLLECT_CURRENT_PAGE' }]);
   });
 
+  it('labels multiple home pages without exposing raw titles or tracking metadata', async () => {
+    tabs = [
+      makeTab(1, connection.base + '/', true),
+      makeTab(2, 'https://www.zhipin.com/?token=private-token', false, {
+        title: '账号张三的招聘页',
+      }),
+      makeTab(3, 'https://www.zhaopin.com/?session=private-session', false, {
+        title: '账号李四的招聘页',
+      }),
+    ];
+    await load();
+    const result = await send({ type: 'READ' });
+    expect(result).toMatchObject({
+      code: 'NEEDS_SELECTION',
+      choices: [
+        { tabId: 2, platform: 'boss', title: 'BOSS直聘 · 首页 · 选项 1' },
+        { tabId: 3, platform: 'zhilian', title: '智联招聘 · 首页 · 选项 2' },
+      ],
+    });
+    expect(JSON.stringify(result)).not.toMatch(/张三|李四|private-token|private-session|https:/);
+    expect(mocks.update).not.toHaveBeenCalled();
+    expect(mocks.sendMessage).not.toHaveBeenCalled();
+  });
+
   it('does not treat a selected home page as readable when it has no observed job entry', async () => {
     tabs = [
       makeTab(1, connection.base + '/', true),

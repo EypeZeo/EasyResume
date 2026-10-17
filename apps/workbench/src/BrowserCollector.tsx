@@ -150,6 +150,12 @@ export default function BrowserCollector({ onSaved }: { onSaved: () => Promise<u
   }, [batch?.status]);
   const running = batch?.status === 'running';
   const paused = batch?.status === 'paused';
+  const batchPlatform =
+    batch?.scope?.platform === 'boss'
+      ? 'BOSS直聘'
+      : batch?.scope?.platform === 'zhilian'
+        ? '智联招聘'
+        : '来源未记录';
   return (
     <section className="panel" aria-labelledby="browser-collect-title">
       <h3 id="browser-collect-title">从浏览器整理岗位</h3>
@@ -167,6 +173,8 @@ export default function BrowserCollector({ onSaved }: { onSaved: () => Promise<u
             setChoices([]);
             setSelectedTab(undefined);
             setDiagnostics(null);
+            retry.current = undefined;
+            setMessage('已切换招聘网站，请定位或读取该网站的职位。');
           }}
         >
           <option value="boss">BOSS直聘</option>
@@ -316,8 +324,16 @@ export default function BrowserCollector({ onSaved }: { onSaved: () => Promise<u
             </button>
           )}
         </div>
-        {batch && (
-          <p>
+        {batch && batch.status !== 'idle' && (
+          <p
+            data-batch-platform={
+              batch?.scope?.platform === 'boss' || batch?.scope?.platform === 'zhilian'
+                ? batch.scope.platform
+                : 'unknown'
+            }
+          >
+            <strong>{batchPlatform} · 批量结果</strong>
+            {' · '}
             已检查 {batch.visited ?? 0} 条 · 新增 {batch.saved ?? 0} 条 · 第 {batch.pages ?? 0} 页
             {batch.pendingReview > 0 && ` · ${batch.pendingReview} 条变化待核对`}
             {batch.unconfirmed > 0 && ` · ${batch.unconfirmed} 条保存结果待核对`}

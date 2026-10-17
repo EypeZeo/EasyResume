@@ -392,6 +392,34 @@ describe('automatic connection entry', () => {
 });
 
 describe('recruiting page location', () => {
+  it('shows the batch source platform without exposing its stored URL', async () => {
+    sendMessage.mockImplementation(async (message: { type: string }) =>
+      message.type === 'STATUS'
+        ? health
+        : {
+            ...idleBatch,
+            status: 'completed',
+            saved: 3,
+            scope: {
+              platform: 'zhilian',
+              href: 'https://www.zhaopin.com/jobs/?token=private-token',
+            },
+          },
+    );
+    await load();
+    expect(document.getElementById('batch-limit')?.textContent).toContain('智联招聘');
+    expect(document.getElementById('batch-saved')?.textContent).toBe('3');
+    expect(document.body.textContent).not.toContain('private-token');
+  });
+
+  it('marks the source unknown for older batch records rather than assuming the current site', async () => {
+    sendMessage.mockImplementation(async (message: { type: string }) =>
+      message.type === 'STATUS' ? health : { ...idleBatch, status: 'completed' },
+    );
+    await load();
+    expect(document.getElementById('batch-limit')?.textContent).toContain('来源未记录');
+  });
+
   it('offers explicit choices for multiple open lists and retries only the selected tab', async () => {
     sendMessage.mockImplementation(async (message: { type: string; tabId?: number }) => {
       if (message.type === 'STATUS') return health;

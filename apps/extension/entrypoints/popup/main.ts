@@ -23,6 +23,7 @@ type BatchStatus = {
   maxJobs: number;
   maxPages: number;
   message?: string;
+  scope?: { platform?: 'boss' | 'zhilian' };
 };
 let batch: BatchStatus = {
   status: 'idle',
@@ -176,8 +177,14 @@ function batchResult(result: unknown) {
   element('batch-progress').hidden = batch.status === 'idle';
   element('batch-progress').dataset.state = batch.status;
   updateText('batch-state', labels[batch.status]);
+  const platform =
+    batch.scope?.platform === 'boss'
+      ? 'BOSS直聘'
+      : batch.scope?.platform === 'zhilian'
+        ? '智联招聘'
+        : '来源未记录';
   element('batch-limit').textContent =
-    `最多 ${count(batch.maxJobs)} 条 · ${count(batch.maxPages)} 页`;
+    `${platform} · 最多 ${count(batch.maxJobs)} 条 · ${count(batch.maxPages)} 页`;
   element('batch-saved').textContent = count(batch.saved);
   element('batch-visited').textContent = count(batch.visited);
   element('batch-pages').textContent = count(batch.pages);
