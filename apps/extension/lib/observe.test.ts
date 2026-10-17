@@ -350,6 +350,150 @@ describe('observed Zhilian list-end marker', () => {
   });
 });
 
+describe('observed Zhilian standalone SSR detail', () => {
+  const href = 'https://www.zhaopin.com/jobdetail/SYNTHETIC_JOB.htm?tracking=private';
+  const fixture = () => {
+    document.title = '合成智联独立职位';
+    document.body.innerHTML = `<section class="summary-planes">
+      <h1 class="summary-planes__title">合成网络运维</h1>
+      <span class="summary-planes__salary">6000-8000元</span>
+      <ul class="summary-planes__info"><li>郑州</li><li>金水区·合成街道</li><li>1-3年</li><li>大专</li></ul>
+    </section><section class="describtion-card seo-card">
+      <h2 class="seo-card__title">职位描述</h2><div class="seo-card__content">
+        <div class="describtion-card__skills">Linux · TCP/IP</div>
+        <div class="describtion-card__content-wrap">维护 Linux 服务器<br>周末双休</div>
+      </div>
+    </section><div class="company-info__header-left"><div class="company-info__meta">
+      <a class="company-info__name" href="/companydetail/SYNTHETIC_CO.htm">合成网络公司</a>
+    </div></div>`;
+  };
+  it('reads only the observed standalone summary, company and description blocks', () => {
+    fixture();
+    const result = observe(document, href);
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      title: '合成网络运维',
+      company: '合成网络公司',
+      platform_job_id: 'SYNTHETIC_JOB',
+      url: 'https://www.zhaopin.com/jobdetail/SYNTHETIC_JOB.htm',
+      city: '郑州',
+      page_kind: 'detail',
+    });
+    expect(result[0].text).toContain('6000-8000元');
+    expect(result[0].text).toContain('郑州 · 金水区·合成街道 · 1-3年 · 大专');
+    expect(result[0].text).toContain('Linux · TCP/IP');
+    expect(result[0].text).toContain('维护 Linux 服务器\n周末双休');
+  });
+  it('ignores hidden previous roots, recommendations, company introduction and HR content', () => {
+    fixture();
+    const hidden = document.createElement('section');
+    hidden.hidden = true;
+    hidden.innerHTML = document.body.innerHTML.replaceAll('合成', '隐藏');
+    document.body.append(hidden);
+    document.body.insertAdjacentHTML(
+      'afterbegin',
+      `<h3 class="jobs-deliver__title">推荐职位不能作为当前标题</h3>
+       <div class="seo-card"><h2 class="seo-card__title">公司介绍</h2><div class="seo-card__content">公司介绍不应收集</div></div>
+       <div class="recruiter-info">HR个人姓名不应收集</div>
+       <a href="/jobdetail/RECOMMEND.htm">相似职位不能作为当前ID</a>`,
+    );
+    document
+      .querySelector('.describtion-card__content-wrap')!
+      .insertAdjacentHTML(
+        'beforeend',
+        '<span hidden>隐藏正文不应收集</span><style>.private { color:red }</style><script>privateData()</script>',
+      );
+    const result = observe(document, href)[0];
+    expect(result.title).toBe('合成网络运维');
+    expect(result.platform_job_id).toBe('SYNTHETIC_JOB');
+    expect(JSON.stringify(result)).not.toMatch(
+      /隐藏|推荐职位|公司介绍|HR个人|相似职位|privateData|color/,
+    );
+  });
+  it.each([
+    '.summary-planes',
+    'h1.summary-planes__title',
+    '.describtion-card.seo-card',
+    'a.company-info__name',
+    '.describtion-card__content-wrap',
+  ])('rejects competing visible current roots for %s', (selector) => {
+    fixture();
+    const original = document.querySelector(selector)!;
+    original.parentElement!.append(original.cloneNode(true));
+    expect(() => observe(document, href)).toThrow('未找到可验证');
+  });
+  it.each(['h1.summary-planes__title', '.describtion-card__content-wrap', 'a.company-info__name'])(
+    'does not borrow a missing %s from recommendations or other page text',
+    (selector) => {
+      fixture();
+      document.querySelector(selector)!.remove();
+      document.body.insertAdjacentHTML(
+        'beforeend',
+        '<h3 class="jobs-deliver__title">推荐标题</h3><div class="seo-card__content">其他正文</div><a href="/companydetail/OTHER.htm">其他公司</a>',
+      );
+      expect(() => observe(document, href)).toThrow('未找到可验证');
+    },
+  );
+  it('requires a nonempty actual description and its exact section heading', () => {
+    fixture();
+    document.querySelector('.describtion-card__content-wrap')!.textContent = '   ';
+    expect(() => observe(document, href)).toThrow('未找到可验证');
+    fixture();
+    document.querySelector('h2.seo-card__title')!.textContent = '公司介绍';
+    expect(() => observe(document, href)).toThrow('未找到可验证');
+  });
+  it.each([
+    'https://www.zhaopin.com.evil.example/companydetail/SYNTHETIC.htm',
+    'https://evil.example/companydetail/SYNTHETIC.htm',
+    'http://www.zhaopin.com/companydetail/SYNTHETIC.htm',
+    'https://user:secret@www.zhaopin.com/companydetail/SYNTHETIC.htm',
+    'https://www.zhaopin.com:444/companydetail/SYNTHETIC.htm',
+    '/jobdetail/SYNTHETIC.htm',
+    'javascript:void(0)',
+  ])('rejects an unverified company link %s', (companyHref) => {
+    fixture();
+    document.querySelector('a.company-info__name')!.setAttribute('href', companyHref);
+    expect(() => observe(document, href)).toThrow('未找到可验证');
+  });
+  it('requires the observed company header ancestry', () => {
+    fixture();
+    document.querySelector('.company-info__meta')!.className = 'recommendation';
+    expect(() => observe(document, href)).toThrow('未找到可验证');
+  });
+  it.each([
+    'https://www.zhaopin.com/jobs/?pageMode=recommend',
+    'https://www.zhaopin.com/recommend',
+    'https://www.zhaopin.com/jobdetail/',
+    'https://www.zhaopin.com/jobdetail/SYNTHETIC_JOB/other',
+  ])('never enables SSR extraction on an unrelated route %s', (otherHref) => {
+    fixture();
+    expect(() => observe(document, otherHref)).toThrow();
+  });
+  it.each([
+    'job-list-panel',
+    'job-split-layout__left',
+    'job-split-layout__right',
+    'job-detail-modules',
+  ])('does not combine SSR roots with a visible split/list region %s', (className) => {
+    fixture();
+    document.body.insertAdjacentHTML('beforeend', `<div class="${className}"></div>`);
+    expect(() => observe(document, href)).toThrow('未找到可验证');
+  });
+  it('preserves redaction, salary-font warnings and existing field limits', () => {
+    fixture();
+    document.querySelector('.summary-planes__salary')!.textContent = '\uE123';
+    document.querySelector('.describtion-card__content-wrap')!.textContent =
+      '联系 13800000000 synthetic@example.test 110101199001010011 ' + '合成职责'.repeat(6000);
+    const result = observe(document, href)[0];
+    expect(result.text).toContain('薪资采用特殊字体，待核对');
+    expect(result.text).toContain('[手机号已省略]');
+    expect(result.text).toContain('[邮箱已省略]');
+    expect(result.text).toContain('[身份证号已省略]');
+    expect(result.text).not.toMatch(/13800000000|synthetic@example|110101199001010011|\uE123/);
+    expect(result.text).toHaveLength(20000);
+  });
+});
+
 describe('structure-only page diagnostics', () => {
   it('reports two bounded wrapper levels around list-tail cards without revealing their text', () => {
     document.body.innerHTML =

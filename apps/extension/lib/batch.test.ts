@@ -871,6 +871,21 @@ describe('strict Zhilian city and administrative district identity', () => {
     expect((await pending).observation?.platform_job_id).toBe('RIGHT_A');
   });
 
+  it.each(['管城', '管城区', '管城回族区'])(
+    'recognizes the government-confirmed Zhengzhou district alias %s',
+    async (district) => {
+      const test = districtIdentityFixture(
+        `郑州市 ${district} 金岱`,
+        '郑州 金水 杜岭',
+        '郑州·管城回族区',
+      );
+      const snapshot = test.reader.prepare('guancheng_alias');
+      const pending = test.reader.step(job(snapshot, snapshot.targets[0].key));
+      await vi.advanceTimersByTimeAsync(3200);
+      expect((await pending).observation?.platform_job_id).toBe('RIGHT_A');
+    },
+  );
+
   it.each([
     ['same-district', '郑州 金水 杜岭', '郑州 金水 金岱', '郑州·金水区·陈庄'],
     ['missing-other-district', '郑州 金水 杜岭', '郑州', '郑州·金水区·陈庄'],
@@ -879,6 +894,9 @@ describe('strict Zhilian city and administrative district identity', () => {
     ['conflicting-suffix', '郑州 金水区 杜岭', '郑州 管城 金岱', '郑州·金水县·陈庄'],
     ['substring-district', '郑州 金水新区 杜岭', '郑州 管城 金岱', '郑州·金水区·陈庄'],
     ['different-city', '郑州 金水 杜岭', '郑州 管城 金岱', '开封·金水区·陈庄'],
+    ['alias-outside-zhengzhou', '开封 管城 金岱', '开封 金水 杜岭', '开封·管城回族区'],
+    ['same-aliased-district', '郑州 管城 金岱', '郑州 管城回族区 商城路', '郑州·管城回族区'],
+    ['alias-substring', '郑州 管城新区 金岱', '郑州 金水 杜岭', '郑州·管城回族区'],
   ])('keeps %s identity ambiguous', async (_name, first, second, right) => {
     const test = districtIdentityFixture(first, second, right);
     const snapshot = test.reader.prepare('district_reject');

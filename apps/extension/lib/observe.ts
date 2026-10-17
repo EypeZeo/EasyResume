@@ -469,6 +469,84 @@ function detailObservation(
   };
 }
 
+/** The public standalone SSR detail has different, narrowly scoped roots from the split view. */
+function zhilianStandaloneObservation(document: Document, url: URL): Observation | undefined {
+  if (
+    !['www.zhaopin.com', 'zhaopin.com'].includes(url.hostname) ||
+    !/^\/jobdetail\/[A-Za-z0-9_-]+\.html?$/.test(url.pathname) ||
+    !jobId(url) ||
+    elements(document, `${JOB_LISTS},.job-split-layout__right,.job-detail-modules`).length
+  )
+    return;
+  const summaries = elements(document, '.summary-planes');
+  const titles = elements(document, 'h1.summary-planes__title');
+  const descriptions = elements(document, '.describtion-card.seo-card');
+  const companies = elements(document, 'a.company-info__name');
+  if (
+    summaries.length !== 1 ||
+    titles.length !== 1 ||
+    !summaries[0].contains(titles[0]) ||
+    descriptions.length !== 1 ||
+    companies.length !== 1
+  )
+    return;
+  const headings = elements(descriptions[0], 'h2.seo-card__title');
+  const contents = elements(descriptions[0], '.seo-card__content');
+  if (
+    headings.length !== 1 ||
+    formatted(rawText(headings[0]), false).trim() !== '职位描述' ||
+    contents.length !== 1
+  )
+    return;
+  const bodies = elements(contents[0], '.describtion-card__content-wrap');
+  if (bodies.length !== 1) return;
+  const companyAnchor = companies[0];
+  if (
+    !companyAnchor.parentElement?.matches('.company-info__meta') ||
+    !companyAnchor.parentElement.parentElement?.matches('.company-info__header-left')
+  )
+    return;
+  let companyUrl: URL;
+  try {
+    companyUrl = new URL(companyAnchor.getAttribute('href') ?? '', url);
+  } catch {
+    return;
+  }
+  if (
+    companyUrl.origin !== url.origin ||
+    companyUrl.username ||
+    companyUrl.password ||
+    !/^\/companydetail\/[A-Za-z0-9_-]+\.html?$/.test(companyUrl.pathname)
+  )
+    return;
+  const title = formatted(rawText(titles[0]), false).trim();
+  const company = formatted(rawText(companyAnchor), false).trim();
+  const description = formatted(rawText(bodies[0]), true).trim();
+  if (!title || !company || !description) return;
+  const salary = text(summaries[0], '.summary-planes__salary');
+  const renderedSalary = /[\uE000-\uF8FF]/.test(salary) ? '薪资采用特殊字体，待核对' : salary;
+  const infoRoots = elements(summaries[0], '.summary-planes__info');
+  const info =
+    infoRoots.length === 1
+      ? elements(infoRoots[0], 'li').map((node) => formatted(rawText(node), false).trim())
+      : [];
+  const skills = text(contents[0], '.describtion-card__skills', true);
+  return {
+    ...base,
+    url: url.origin + url.pathname,
+    title: redact(title).slice(0, 160),
+    company: redact(company).slice(0, 160),
+    city: redact((info[0] ?? '').split(/[·\s]/)[0]).slice(0, 60),
+    text: redact(
+      [title, renderedSalary, info.filter(Boolean).join(' · '), skills, description]
+        .filter(Boolean)
+        .join('\n'),
+    ).slice(0, 20000),
+    platform_job_id: jobId(url),
+    page_kind: 'detail',
+  };
+}
+
 export function observeSelection(
   document: Document,
   href: string,
@@ -711,9 +789,11 @@ export function observe(document: Document, href: string): Observation[] {
   }
   // On standalone detail pages the title and description share the document, not the list.
   if (jobId(url)) {
-    const observation = elements(document, JOB_LISTS).length
-      ? undefined
-      : detailObservation(document, url, document);
+    const observation =
+      zhilianStandaloneObservation(document, url) ??
+      (elements(document, JOB_LISTS).length
+        ? undefined
+        : detailObservation(document, url, document));
     if (observation) return [observation];
     throw new Error('未找到可验证的职位标题或描述，可能页面已改版；请手动粘贴');
   }

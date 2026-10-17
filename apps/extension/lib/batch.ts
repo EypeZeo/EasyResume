@@ -111,6 +111,19 @@ function sameAdministrativePart(first: string, second: string, suffixes: string[
   );
 }
 
+function sameCityDistrict(first: [string, string], second: [string, string]): boolean {
+  if (!sameAdministrativePart(first[0], second[0], ['市'])) return false;
+  if (sameAdministrativePart(first[1], second[1], ['市', '区', '县'])) return true;
+  // Observed on Zhilian; the district government confirms these Zhengzhou aliases.
+  // https://www.guancheng.gov.cn/gcgk.jhtml
+  const guancheng = ['管城', '管城区', '管城回族区'];
+  return (
+    sameAdministrativePart(first[0], '郑州', ['市']) &&
+    guancheng.includes(first[1]) &&
+    guancheng.includes(second[1])
+  );
+}
+
 function rightPublicZhilianId(root: Element, href: string, title: string): string | undefined {
   const ids = new Set<string>();
   for (const anchor of root.querySelectorAll<HTMLAnchorElement>('a[href]')) {
@@ -465,11 +478,7 @@ export function createBatchReader(document: Document, href: () => string, adapte
       if (locations.length !== 1) return false;
       const place = explicitCityDistrict(locations[0].textContent ?? '');
       if (!place) return false;
-      if (
-        sameAdministrativePart(place[0], rightPlace[0], ['市']) &&
-        sameAdministrativePart(place[1], rightPlace[1], ['市', '区', '县'])
-      )
-        matches.push(item);
+      if (sameCityDistrict(place, rightPlace)) matches.push(item);
     }
     return group.length > 1 && matches.length === 1 && matches[0].element === target.element;
   }
