@@ -369,10 +369,19 @@ export function createBatchReader(document: Document, href: () => string, adapte
       roots.length !== 1 ||
       !target.element.matches('.job-card') ||
       target.element.closest('.job-split-layout__left .job-list-panel') !== panels[0] ||
-      roots[0].childElementCount !== 0 ||
       roots[0].textContent?.trim()
     )
       return false;
+    const root = roots[0];
+    const detailShell = root.firstElementChild;
+    const scrollShell = detailShell?.firstElementChild;
+    const observedEmptyShell =
+      root.childElementCount === 1 &&
+      detailShell?.matches('.job-detail-modules__detail') &&
+      detailShell.childElementCount === 1 &&
+      scrollShell?.matches('.job-detail-modules__scroll') &&
+      scrollShell.childElementCount === 0;
+    if (root.childElementCount !== 0 && !observedEmptyShell) return false;
     const selectedTargets = values.filter((item) => selected(item.element) === true);
     if (selectedTargets.length !== 1 || selectedTargets[0].element !== target.element) return false;
     return !Array.from(

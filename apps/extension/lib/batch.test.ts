@@ -668,6 +668,36 @@ describe('bounded readonly batch steps on synthetic DOM', () => {
 });
 
 describe('one bounded reselection of an empty selected Zhilian detail', () => {
+  it('recovers through the two empty detail shells observed on the real Zhilian page', async () => {
+    const test = emptyZhilianFixture();
+    test.onClick((key, count) => {
+      test.module.innerHTML =
+        '<div class="job-detail-modules__detail"><div class="job-detail-modules__scroll"></div></div>';
+      if (count === 2) setTimeout(() => test.complete(key), 1000);
+    });
+    const snapshot = test.reader.prepare('real_empty_shell');
+    const pending = test.reader.step(job(snapshot));
+    await vi.advanceTimersByTimeAsync(8200);
+    expect(test.clickCount()).toBe(2);
+    expect((await pending).observation?.platform_job_id).toBe('a');
+  });
+
+  it.each([
+    '<div class="unknown-empty-placeholder"></div>',
+    '<div class="job-detail-modules__detail"><div class="job-detail-modules__scroll"><canvas></canvas></div></div>',
+    '<div class="job-detail-modules__detail"><div class="job-detail-modules__scroll" aria-busy="true"></div></div>',
+  ])('does not reselect an unknown or busy empty subtree: %s', async (placeholder) => {
+    const test = emptyZhilianFixture();
+    test.onClick(() => {
+      test.module.innerHTML = placeholder;
+    });
+    const snapshot = test.reader.prepare('unknown_empty_shell');
+    const rejection = expect(test.reader.step(job(snapshot))).rejects.toThrow('超时');
+    await vi.advanceTimersByTimeAsync(15000);
+    await rejection;
+    expect(test.clickCount()).toBe(1);
+  });
+
   it('waits at least five seconds, reselects the same card once and accepts only its settled result', async () => {
     const test = emptyZhilianFixture();
     const started = Date.now();
