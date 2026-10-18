@@ -325,6 +325,17 @@ function JobFields({ job, setJob }: { job: JobModel; setJob: (j: any) => void })
   const tri = { unknown: '未知', true: '是（当前记录的声明）', false: '否（当前记录的声明）' };
   return (
     <div className="form-grid">
+      {job.risks
+        .filter((risk) => risk.startsWith('学历'))
+        .map((risk) => (
+          <p
+            className="col-span-full mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-amber-950"
+            role="status"
+            key={risk}
+          >
+            {risk}
+          </p>
+        ))}
       <Field label="职位名称">
         <input required value={job.title} onChange={(e) => set('title', e.target.value)} />
       </Field>
@@ -1068,6 +1079,16 @@ export default function App() {
                         {row.assessment?.reasons?.length > 0 && (
                           <p className="card-unknown">{row.assessment.reasons[0].message}</p>
                         )}
+                        {row.data.risks
+                          .filter((risk: string) => risk.startsWith('学历'))
+                          .map((risk: string) => (
+                            <p
+                              className="mt-2 rounded-md bg-amber-50 p-2 text-amber-950"
+                              key={risk}
+                            >
+                              {risk}
+                            </p>
+                          ))}
                         <div className="card-bottom">
                           <span className="score-text">
                             {row.assessment?.low != null ? (

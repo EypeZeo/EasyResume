@@ -6,7 +6,7 @@ from easyresume.models import now_iso
 from easyresume.resume import DEGREE_LEVELS, education_issues
 from easyresume.schemas import EducationRecord, Evidence, Job, Profile, SkillRecord, WorkRecord
 
-PARSER_VERSION = "rules-2.1"
+PARSER_VERSION = "rules-2.2"
 DEGREES = DEGREE_LEVELS
 SKILLS = {
     "Python": ["python"],
@@ -102,24 +102,76 @@ def _benefit(text: str, word: str) -> bool | None:
     return True if re.search(word, text) else None
 
 
+def _job_education(job: Job, text: str, now: str) -> None:
+    """Compare local qualification declarations, not every degree word in a JD."""
+    aliases = {"研究生": "硕士", "学士": "本科", "专科": "大专"}
+    degree_pattern = r"博士|硕士|研究生|本科|学士|大专|专科|中专|高中"
+    claims = []
+    separated = re.sub(
+        r"[（(]([^（）()\n]*?(?:优先|为佳|加分|更佳))[）)]", r"，\1，", text
+    )
+    for clause in re.split(r"[\n。；;，,]", separated):
+        clause = clause.strip()
+        if not clause:
+            continue
+        if re.search(r"学历不限|不限学历|不要求学历", clause):
+            claims.append(("none", "unrestricted", clause, False))
+        matches = [
+            m for m in re.finditer(degree_pattern, clause)
+            if re.match(
+                r"\s*(?:$|[·•/／、）)]|[（(]\s*在读|及以上|以上|学历|学位|文凭|毕业|应届|在读|优先|为佳|或|生(?:$|\s|及|或))",
+                clause[m.end():],
+            )
+            and not re.search(r"(?:不要求|无需|不限于|不限制|不需要)\s*$", clause[:m.start()])
+        ]
+        if not matches:
+            continue
+        degrees = [aliases.get(m[0], m[0]) for m in matches]
+        # A shared alternative is a set of accepted degrees, not its highest member.
+        alternative_degrees = len(matches) > 1 and all(
+            re.fullmatch(r"\s*(?:或|/|／|、)\s*", clause[a.end():b.start()])
+            for a, b in zip(matches, matches[1:], strict=False)
+        )
+        degree = (min if alternative_degrees else max)(degrees, key=DEGREES.get)
+        mode = "preferred" if re.search(r"优先|为佳|加分|更佳", clause) else "required"
+        if mode == "required" and re.search(r"或.{0,18}(?:经验|经历)", clause):
+            mode = "alternative"
+        student = bool(re.search(r"在读", clause))
+        claims.append((degree, mode, clause, student))
+
+    mandatory = [c for c in claims if c[1] != "preferred"]
+    pool = [c for c in mandatory if c[0] != "none"] or [
+        c for c in claims if c[1] == "preferred"
+    ] or mandatory
+    if not pool:
+        return
+    chosen = max(pool, key=lambda c: DEGREES[c[0]])
+    chosen = next((c for c in pool if c[0] == chosen[0] and c[1] == "alternative"), chosen)
+    job.education, job.education_mode = chosen[:2]
+    distinct = sorted({c[0] for c in mandatory}, key=DEGREES.get)
+    if len(distinct) > 1:
+        labels = ["不限" if d == "none" else d for d in distinct]
+        job.risks.append(
+            f"学历要求不一致：{' / '.join(labels)}；初筛采用较高的{job.education}，请核实实际门槛"
+        )
+    if any(c[3] for c in mandatory):
+        job.education_mode = "complex"
+        job.risks.append("学历包含在读条件，不能按已毕业学历判断；请核对允许的在读学历及毕业时间")
+    if re.search(r"优秀者.*放宽|学历.*可放宽|同等.*学历", text):
+        job.education_mode = "complex"
+    for degree, mode, quote, student in claims[:20]:
+        job.evidence.append(Evidence(
+            field="education", value=degree, snippet=quote[:500], observed_at=now,
+            note=f"页面学历声明；{'优先' if mode == 'preferred' else '必需或限制'}"
+            + ("；在读条件待核实" if student else "") + f"；{PARSER_VERSION}",
+        ))
+
+
 def parse_job(text: str, **meta) -> Job:
     now = now_iso()
     job = Job(text=text, observed_at=now, **meta)
     job.skills = skills_from(text)
-    job.education = degree_from(text)
-    if job.education != "unknown":
-        job.education_mode = "required"
-        if re.search(r"(?:本科|硕士|博士|大专|专科).{0,4}(?:优先|为佳)", text):
-            job.education_mode = "preferred"
-        if re.search(r"学历不限|不限学历", text):
-            job.education_mode = "preferred" if "优先" in text else "unrestricted"
-        if re.search(r"(?:本科|大专|硕士).{0,18}或.{0,18}(?:经验|经历)", text):
-            job.education_mode = "alternative"
-        if re.search(r"优秀者.*放宽|学历.*可放宽|同等.*学历", text):
-            job.education_mode = "complex"
-    elif re.search(r"学历不限|不限学历", text):
-        job.education = "none"
-        job.education_mode = "unrestricted"
+    _job_education(job, text, now)
     if "非全日制" in text:
         job.education_form = "unknown"
     elif re.search(r"全日制", re.sub(r"(?:不要求|不限|无需|不限制)\s*全日制", "", text)):
@@ -202,7 +254,6 @@ def parse_job(text: str, **meta) -> Job:
     if re.search(r"央企项目|国企项目|服务.{0,4}央企", text):
         job.risks.append("项目性质不等于合同主体性质")
     for field, pattern in {
-        "education": r"本科|大专|硕士|博士|学历|专科",
         "experience": r"经验",
         "salary": r"薪|工资|[kK]",
         "rest": r"双休|单休|轮休|大小周",
