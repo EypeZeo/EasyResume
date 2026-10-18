@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createBatchReader, type BatchAdapter, type BatchSnapshot } from './batch';
-import { listExhausted, loadMoreTarget, type Observation } from './observe';
+import { listExhausted, loadMoreTarget, observe, type Observation } from './observe';
 
 const url = 'https://www.zhipin.com/web/geek/job-recommend';
 let href = url;
@@ -165,6 +165,10 @@ function emptyZhilianFixture() {
       completeKey = key;
       module.innerHTML = '<p>已加载的完整职位内容</p>';
     },
+    empty() {
+      completeKey = '';
+      module.replaceChildren();
+    },
   };
 }
 
@@ -217,6 +221,21 @@ function districtIdentityFixture(
     nextPageTarget: () => undefined,
   };
   return { reader: createBatchReader(document, () => href, adapter), adapter, root, cards, click };
+}
+
+function salaryIdentityFixture(first = '6000-11000元', second = '7000-14000元', right = first) {
+  const test = districtIdentityFixture('郑州 金水 杜岭', '郑州 金水 凤凰台');
+  for (const [index, card] of test.cards.entries())
+    card.insertAdjacentHTML(
+      'beforeend',
+      `<span class="job-card__salary">${index === 0 ? first : second}</span>`,
+    );
+  test.root.insertAdjacentHTML(
+    'beforeend',
+    `<span class="job-detail-summary__salary">${right}</span>`,
+  );
+  test.adapter.observe = () => observe(document, href);
+  return test;
 }
 
 beforeEach(() => {
@@ -719,6 +738,119 @@ describe('bounded readonly batch steps on synthetic DOM', () => {
 });
 
 describe('one bounded reselection of an empty selected Zhilian detail', () => {
+  it('recovers once when a briefly matching detail disappears before it settles', async () => {
+    const test = emptyZhilianFixture();
+    test.onClick((key, count) => {
+      if (count === 1) {
+        setTimeout(() => test.complete(key), 600);
+        setTimeout(() => test.empty(), 800);
+      } else setTimeout(() => test.complete(key), 1000);
+    });
+    const snapshot = test.reader.prepare('transient_detail');
+    const pending = test.reader.step(job(snapshot));
+    void pending.catch(() => {});
+    await vi.advanceTimersByTimeAsync(4800);
+    expect(test.clickCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(test.clickCount()).toBe(2);
+    await vi.advanceTimersByTimeAsync(3200);
+    expect(await pending).toMatchObject({
+      observation: { platform_job_id: 'a', text: '完整智联描述 a' },
+      completed: 1,
+    });
+  });
+
+  it('accepts a final reselection only with its three-second settle and one sample still available', async () => {
+    const test = emptyZhilianFixture();
+    const started = Date.now();
+    test.onClick((key, count) => {
+      if (count === 1) {
+        test.module.innerHTML = '<div class="unknown-empty-placeholder"></div>';
+        setTimeout(() => test.empty(), 10800);
+      } else test.complete(key);
+    });
+    const snapshot = test.reader.prepare('last_viable_reselection');
+    const pending = test.reader.step(job(snapshot));
+    await vi.advanceTimersByTimeAsync(11800);
+    expect(test.clickTimes).toEqual([started, started + 11800]);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(await pending).toMatchObject({ completed: 1, observation: { platform_job_id: 'a' } });
+    expect(Date.now() - started).toBe(14800);
+  });
+
+  it.each([11000, 11200])(
+    'does not click again when an empty shell appearing at %dms leaves insufficient settle time',
+    async (emptyAt) => {
+      const test = emptyZhilianFixture();
+      test.onClick((key, count) => {
+        if (count === 1) {
+          test.module.innerHTML = '<div class="unknown-empty-placeholder"></div>';
+          setTimeout(() => test.empty(), emptyAt);
+        } else test.complete(key);
+      });
+      const snapshot = test.reader.prepare('too_late_to_reselect');
+      const rejection = expect(test.reader.step(job(snapshot))).rejects.toThrow('超时');
+      await vi.advanceTimersByTimeAsync(15000);
+      await rejection;
+      expect(test.clickCount()).toBe(1);
+      expect(test.reader.prepare('after_deadline').completed).toBe(0);
+    },
+  );
+
+  it('keeps the initial spacing inside the original fifteen-second step deadline', async () => {
+    const test = emptyZhilianFixture();
+    test.onClick((key) => {
+      if (key === 'a') test.complete(key);
+      else test.module.innerHTML = '<div class="unknown-empty-placeholder"></div>';
+    });
+    const snapshot = test.reader.prepare('spacing_budget');
+    const first = test.reader.step(job(snapshot));
+    await vi.advanceTimersByTimeAsync(3200);
+    const firstResult = await first;
+    const secondStarted = Date.now();
+    const settled = vi.fn();
+    const second = test.reader.step(job(firstResult, 'b')).finally(settled);
+    const rejection = expect(second).rejects.toThrow('超时');
+    await vi.advanceTimersByTimeAsync(14800);
+    expect(settled).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(200);
+    await rejection;
+    expect(Date.now() - secondStarted).toBe(15000);
+    expect(test.clickTimes[1] - test.clickTimes[0]).toBe(5000);
+    expect(test.clickCount()).toBe(2);
+  });
+
+  it('never completes when the result after its only reselection has a different job identity', async () => {
+    const test = emptyZhilianFixture();
+    const original = test.adapter.observe;
+    test.adapter.observe = (...args) =>
+      original(...args).map((value) => ({ ...value, platform_job_id: 'other-job' }));
+    test.onClick((key, count) => {
+      if (count === 2) test.complete(key);
+    });
+    const snapshot = test.reader.prepare('wrong_reselection_result');
+    const rejection = expect(test.reader.step(job(snapshot))).rejects.toThrow('超时');
+    await vi.advanceTimersByTimeAsync(15000);
+    await rejection;
+    expect(test.clickCount()).toBe(2);
+    expect(test.reader.prepare('after_wrong_result').completed).toBe(0);
+  });
+
+  it('does not accept a late recovery result after cancellation', async () => {
+    const test = emptyZhilianFixture();
+    test.onClick((key, count) => {
+      if (count === 2) setTimeout(() => test.complete(key), 2000);
+    });
+    const snapshot = test.reader.prepare('cancel_late_recovery');
+    const rejection = expect(test.reader.step(job(snapshot))).rejects.toThrow('暂停');
+    await vi.advanceTimersByTimeAsync(6000);
+    test.reader.stop('cancel_late_recovery');
+    await rejection;
+    await vi.advanceTimersByTimeAsync(9000);
+    expect(test.clickCount()).toBe(2);
+    expect(test.reader.prepare('after_cancel').completed).toBe(0);
+  });
+
   it('recovers through the two empty detail shells observed on the real Zhilian page', async () => {
     const test = emptyZhilianFixture();
     test.onClick((key, count) => {
@@ -785,6 +917,10 @@ describe('one bounded reselection of an empty selected Zhilian detail', () => {
     'does not reselect after %s changes during the wait',
     async (change) => {
       const test = emptyZhilianFixture();
+      test.onClick((key) => {
+        setTimeout(() => test.complete(key), 600);
+        setTimeout(() => test.empty(), 800);
+      });
       const snapshot = test.reader.prepare('cancel_recovery');
       const rejection = expect(test.reader.step(job(snapshot))).rejects.toThrow();
       await vi.advanceTimersByTimeAsync(4000);
@@ -954,5 +1090,250 @@ describe('strict Zhilian city and administrative district identity', () => {
     ).rejects.toThrow('身份待核对');
     await vi.advanceTimersByTimeAsync(15000);
     await rejection;
+  });
+});
+
+describe('strict Zhilian displayed yuan range identity', () => {
+  async function ambiguous(test: ReturnType<typeof salaryIdentityFixture>, index = 0) {
+    const snapshot = test.reader.prepare('salary_ambiguous');
+    const rejection = expect(
+      test.reader.step(job(snapshot, snapshot.targets[index].key)),
+    ).rejects.toThrow('身份待核对');
+    await vi.advanceTimersByTimeAsync(15000);
+    await rejection;
+  }
+
+  it('distinguishes two same-district cards only by their exact displayed yuan endpoints', async () => {
+    const test = salaryIdentityFixture();
+    const snapshot = test.reader.prepare('salary_exact');
+    const pending = test.reader.step(job(snapshot, snapshot.targets[0].key));
+    await vi.advanceTimersByTimeAsync(3200);
+    expect(await pending).toMatchObject({
+      observation: { platform_job_id: 'RIGHT_A', text: expect.stringContaining('6000-11000元') },
+      completed: 1,
+    });
+    expect(test.click).not.toHaveBeenCalled();
+  });
+
+  it('accepts a new selected card only after its own salary and public detail settle', async () => {
+    const test = salaryIdentityFixture();
+    const snapshot = test.reader.prepare('salary_new_card');
+    const pending = test.reader.step(job(snapshot, snapshot.targets[1].key));
+    await vi.advanceTimersByTimeAsync(800);
+    test.root.querySelector('.job-detail-summary__salary')!.textContent = '7000-14000元';
+    test.root.querySelector('a')!.setAttribute('href', '/jobdetail/RIGHT_B.htm');
+    test.root.querySelector('.job-description__content')!.textContent = '第二条完整职责';
+    await vi.advanceTimersByTimeAsync(3200);
+    expect((await pending).observation).toMatchObject({ platform_job_id: 'RIGHT_B' });
+    expect(test.click).toHaveBeenCalledOnce();
+  });
+
+  it('allows two street-only locations without treating their street names as districts', async () => {
+    const test = salaryIdentityFixture('7000-9000元·13薪', '5000-9000元', '5000-9000元');
+    test.cards[0].querySelector('.job-card__location')!.textContent = '郑州 二七区 长江路';
+    test.cards[1].querySelector('.job-card__location')!.textContent = '郑州 城东路';
+    test.root.querySelector('.job-detail-summary__tag')!.textContent = '郑州·紫荆山';
+    const snapshot = test.reader.prepare('salary_streets');
+    const pending = test.reader.step(job(snapshot, snapshot.targets[1].key));
+    await vi.advanceTimersByTimeAsync(3200);
+    expect((await pending).observation?.text).toContain('5000-9000元');
+    expect(test.click).toHaveBeenCalledOnce();
+  });
+
+  it('accepts matching explicit extra-month labels only when the base range is independently unique', async () => {
+    const test = salaryIdentityFixture('6000-11000元·13薪');
+    const snapshot = test.reader.prepare('salary_months');
+    const pending = test.reader.step(job(snapshot, snapshot.targets[0].key));
+    await vi.advanceTimersByTimeAsync(3200);
+    expect((await pending).observation?.text).toContain('6000-11000元·13薪');
+  });
+
+  it('allows an abbreviated district only when it agrees with the explicit right district', async () => {
+    const test = salaryIdentityFixture();
+    test.cards[0].querySelector('.job-card__location')!.textContent = '郑州市 金水';
+    const snapshot = test.reader.prepare('salary_district_suffix');
+    const pending = test.reader.step(job(snapshot, snapshot.targets[0].key));
+    await vi.advanceTimersByTimeAsync(3200);
+    expect((await pending).observation?.platform_job_id).toBe('RIGHT_A');
+  });
+
+  it('preserves a verified stable-ID match even when salaries cannot be parsed', async () => {
+    const test = salaryIdentityFixture('面议', '未知');
+    test.cards[0].dataset.id = 'RIGHT_A';
+    const snapshot = test.reader.prepare('stable_id_without_salary');
+    const pending = test.reader.step(job(snapshot, snapshot.targets[0].key));
+    await vi.advanceTimersByTimeAsync(3200);
+    expect((await pending).observation?.platform_job_id).toBe('RIGHT_A');
+  });
+
+  it('preserves the existing unique-district path without a usable salary snapshot', async () => {
+    const test = districtIdentityFixture();
+    test.cards[0].insertAdjacentHTML('beforeend', '<span class="job-card__salary">面议</span>');
+    const snapshot = test.reader.prepare('district_without_salary');
+    const pending = test.reader.step(job(snapshot, snapshot.targets[0].key));
+    await vi.advanceTimersByTimeAsync(3200);
+    expect((await pending).observation?.platform_job_id).toBe('RIGHT_A');
+  });
+
+  it.each([
+    ['same-range', '6000-11000元', '6000-11000元', '6000-11000元'],
+    ['overlap-only', '6000-11000元', '7000-14000元', '7000-11000元'],
+    ['month-presence-only', '6000-11000元·13薪', '6000-11000元', '6000-11000元·13薪'],
+    ['month-count-only', '6000-11000元·13薪', '6000-11000元·14薪', '6000-11000元·13薪'],
+    ['missing-right-months', '6000-11000元·13薪', '7000-14000元', '6000-11000元'],
+    ['missing-card-months', '6000-11000元', '7000-14000元', '6000-11000元·13薪'],
+    ['conflicting-months', '6000-11000元·13薪', '7000-14000元', '6000-11000元·14薪'],
+  ])('rejects %s instead of widening salary matching', async (_name, first, second, right) => {
+    await ambiguous(salaryIdentityFixture(first, second, right));
+  });
+
+  it.each([
+    '',
+    '面议',
+    '6-11K',
+    '6000-11000美元',
+    '6000-11000元/天',
+    '综合收入6000-11000元',
+    '11000-6000元',
+    '\uE123-11000元',
+  ])('rejects missing, unsupported or obfuscated group salary %s', async (unsupported) => {
+    await ambiguous(salaryIdentityFixture('6000-11000元', unsupported));
+  });
+
+  it.each([
+    'missing-other-city',
+    'duplicate-other-city',
+    'duplicate-other-salary',
+    'duplicate-right-salary',
+    'missing-public-id',
+    'conflicting-public-id',
+    'right-id-owned-by-other-card',
+  ])('rejects %s even if one displayed range matches', async (problem) => {
+    const test = salaryIdentityFixture();
+    if (problem === 'missing-other-city')
+      test.cards[1].querySelector('.job-card__location')!.textContent = '未知';
+    if (problem === 'duplicate-other-city')
+      test.cards[1].insertAdjacentHTML(
+        'beforeend',
+        '<span class="job-card__location">郑州 金水</span>',
+      );
+    if (problem === 'duplicate-other-salary')
+      test.cards[1].insertAdjacentHTML(
+        'beforeend',
+        '<span class="job-card__salary">7000-14000元</span>',
+      );
+    if (problem === 'duplicate-right-salary')
+      test.root.insertAdjacentHTML(
+        'beforeend',
+        '<span class="job-detail-summary__salary">6000-11000元</span>',
+      );
+    if (problem === 'missing-public-id') test.root.querySelector('a')!.remove();
+    if (problem === 'conflicting-public-id')
+      test.root.insertAdjacentHTML(
+        'beforeend',
+        '<a href="/jobdetail/OTHER.htm">查看更多职位信息</a>',
+      );
+    if (problem === 'right-id-owned-by-other-card') test.cards[1].dataset.id = 'RIGHT_A';
+    await ambiguous(test);
+  });
+
+  it.each([
+    ['郑州 二七区 长江路', '郑州·金水区·陈庄'],
+    ['郑州 金水', '郑州·管城回族区'],
+    ['郑州 金水区', '郑州·金水县'],
+    ['郑州 金水 杜岭', '开封·金水区'],
+  ])('preserves explicit geography conflicts: %s / %s', async (cardPlace, rightPlace) => {
+    const test = salaryIdentityFixture();
+    test.cards[0].querySelector('.job-card__location')!.textContent = cardPlace;
+    test.root.querySelector('.job-detail-summary__tag')!.textContent = rightPlace;
+    await ambiguous(test);
+  });
+
+  it('checks the complete same-name group beyond the processing target cap', async () => {
+    const test = salaryIdentityFixture('6000-11000元', '6000-11000元');
+    const observation = test.adapter.observe(document, href);
+    for (let index = 0; index < 99; index++)
+      test.cards[1].insertAdjacentHTML(
+        'beforebegin',
+        `<article class="job-card"><span class="job-card__title-clamp">其他岗位${index}</span><span class="job-card__company-name">其他公司</span><span class="job-card__location">郑州 金水</span></article>`,
+      );
+    test.adapter.observe = () => observation;
+    test.adapter.listTargets = () =>
+      Array.from(document.querySelectorAll<HTMLElement>('.job-card')).map((element) => {
+        const title = element.querySelector('.job-card__title-clamp')!.textContent!;
+        const company = element.querySelector('.job-card__company-name')!.textContent!;
+        const location = element.querySelector('.job-card__location')!.textContent!;
+        return { key: `${title}\u001f${company}\u001f${location}`, title, company, element };
+      });
+    await ambiguous(test);
+  }, 10000);
+
+  it('rejects a late old detail whose salary belongs to the other selected-name card', async () => {
+    const test = salaryIdentityFixture();
+    await ambiguous(test, 1);
+    expect(test.cards[1].classList.contains('job-card--active')).toBe(true);
+    expect(test.click).toHaveBeenCalledOnce();
+  });
+
+  it('checks the initial group again before the first click', async () => {
+    const test = salaryIdentityFixture();
+    const snapshot = test.reader.prepare('salary_before_click');
+    const rejection = expect(
+      test.reader.step(job(snapshot, snapshot.targets[1].key)),
+    ).rejects.toThrow('城市或薪资信息已变化');
+    test.cards[0].querySelector('.job-card__salary')!.textContent = '8000-15000元';
+    await vi.advanceTimersByTimeAsync(200);
+    await rejection;
+    expect(test.click).not.toHaveBeenCalled();
+  });
+
+  it.each(['other-salary', 'selected-salary', 'node-replaced'])(
+    'rejects %s metadata changes during the stable wait',
+    async (change) => {
+      const test = salaryIdentityFixture();
+      const snapshot = test.reader.prepare('salary_changed');
+      const rejection = expect(
+        test.reader.step(job(snapshot, snapshot.targets[0].key)),
+      ).rejects.toThrow('城市或薪资信息已变化');
+      await vi.advanceTimersByTimeAsync(1600);
+      if (change === 'node-replaced') test.cards[1].replaceWith(test.cards[1].cloneNode(true));
+      else
+        test.cards[change === 'other-salary' ? 1 : 0].querySelector(
+          '.job-card__salary',
+        )!.textContent = '8000-15000元';
+      await vi.advanceTimersByTimeAsync(200);
+      await rejection;
+      expect(test.click).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not begin salary matching from metadata that appeared only after clicking', async () => {
+    const test = salaryIdentityFixture();
+    test.cards[1].querySelector('.job-card__salary')!.remove();
+    const snapshot = test.reader.prepare('salary_initially_missing');
+    const rejection = expect(
+      test.reader.step(job(snapshot, snapshot.targets[0].key)),
+    ).rejects.toThrow('身份待核对');
+    await vi.advanceTimersByTimeAsync(800);
+    test.cards[1].insertAdjacentHTML(
+      'beforeend',
+      '<span class="job-card__salary">7000-14000元</span>',
+    );
+    await vi.advanceTimersByTimeAsync(14200);
+    await rejection;
+  });
+
+  it('rechecks the frozen group before an empty-detail recovery click', async () => {
+    const test = salaryIdentityFixture();
+    test.cards[1].addEventListener('click', () => test.root.replaceChildren());
+    const snapshot = test.reader.prepare('salary_recovery_changed');
+    const rejection = expect(
+      test.reader.step(job(snapshot, snapshot.targets[1].key)),
+    ).rejects.toThrow('城市或薪资信息已变化');
+    await vi.advanceTimersByTimeAsync(4800);
+    test.cards[0].querySelector('.job-card__salary')!.textContent = '8000-15000元';
+    await vi.advanceTimersByTimeAsync(400);
+    await rejection;
+    expect(test.click).toHaveBeenCalledOnce();
   });
 });

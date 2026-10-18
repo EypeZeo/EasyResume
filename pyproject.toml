@@ -1,6 +1,6 @@
 [project]
 name = "easyresume"
-version = "0.2.0b12"
+version = "0.2.0b13"
 description = "Local-first, evidence-aware job search workbench"
 requires-python = ">=3.12,<3.15"
 license = "MIT"

@@ -52,6 +52,7 @@ const INTERVAL_MS = 3000;
 const ZHILIAN_INTERVAL_MS = 5000;
 const TIMEOUT_MS = 15000;
 const STABLE_MS = 1000;
+const POLL_MS = 200;
 const DANGEROUS_ACTION =
   /^(立即沟通|立即投递|投递简历|申请职位|发送|发送简历|收藏|取消收藏|打招呼|申请|沟通|登录|注册)$/;
 const normalize = (value: string) => value.replace(/[\s\u200b-\u200d\ufeff]+/g, '').trim();
@@ -122,6 +123,50 @@ function sameCityDistrict(first: [string, string], second: [string, string]): bo
     guancheng.includes(first[1]) &&
     guancheng.includes(second[1])
   );
+}
+
+function visibleText(element: Element): string {
+  return Array.from(element.childNodes)
+    .map((node) =>
+      node.nodeType === 3
+        ? (node.textContent ?? '')
+        : node.nodeType === 1 &&
+            visible(node as Element) &&
+            !(node as Element).matches('script,style,button,iframe')
+          ? visibleText(node as Element)
+          : '',
+    )
+    .join('')
+    .trim();
+}
+
+function visibleField(root: Element, selector: string): string | undefined {
+  const matches = Array.from(root.querySelectorAll(selector)).filter(visible);
+  if (matches.length === 1) return visibleText(matches[0]);
+}
+
+function explicitCity(value: string): string | undefined {
+  const city = value.trim().split(/[\s·•]+/)[0];
+  if (
+    /^[\u3400-\u9fff]{2,16}$/.test(city) &&
+    !/^(不限|全市|全区|全县|全国|附近|周边|未知|待定|其他)$/.test(city)
+  )
+    return city;
+}
+
+function explicitYuanRange(value: string) {
+  // Only the observed literal yuan range is supported. A missing extra-month label is unknown.
+  const match = normalize(value).match(/^([1-9]\d{0,6})-([1-9]\d{0,6})元(?:·([1-9]\d?)薪)?$/);
+  if (!match || Number(match[1]) > Number(match[2])) return;
+  return { low: Number(match[1]), high: Number(match[2]), months: match[3] ?? '' };
+}
+
+function explicitAdministrativePlace(value: string): [string, string] | undefined {
+  const place = explicitCityDistrict(value);
+  const parts = value.trim().split(/[\s·•]+/);
+  // Two components can be city + street. Only an explicit suffix or a full three-part
+  // administrative location can veto the salary fallback; streets are never compared.
+  if (place && (parts.length >= 3 || /[区县市]$/.test(place[1]))) return place;
 }
 
 function rightPublicZhilianId(root: Element, href: string, title: string): string | undefined {
@@ -401,11 +446,11 @@ export function createBatchReader(document: Document, href: () => string, adapte
     lastClick = Date.now();
   }
 
-  function unambiguousZhilianDistrict(
+  function zhilianIdentityContext(
     target: BatchTarget,
     observation: Observation,
     observationId: string,
-  ): boolean {
+  ) {
     if (
       !['www.zhaopin.com', 'sou.zhaopin.com', 'jobs.zhaopin.com'].includes(
         new URL(href()).hostname,
@@ -414,7 +459,7 @@ export function createBatchReader(document: Document, href: () => string, adapte
       target.platform_job_id ||
       stableId(target.key)
     )
-      return false;
+      return;
     const panels = Array.from(
       document.querySelectorAll('.job-split-layout__left .job-list-panel'),
     ).filter(visible);
@@ -424,7 +469,7 @@ export function createBatchReader(document: Document, href: () => string, adapte
       roots.length !== 1 ||
       roots[0].closest('.job-split-layout__left .job-list-panel')
     )
-      return false;
+      return;
     const root = roots[0];
     const rightTitle = Array.from(root.querySelectorAll('.job-detail-summary__title-text')).filter(
       visible,
@@ -439,10 +484,7 @@ export function createBatchReader(document: Document, href: () => string, adapte
       normalize(rightCompany[0].textContent ?? '') !== normalize(observation.company) ||
       rightPublicZhilianId(root, href(), observation.title) !== observationId
     )
-      return false;
-    const rightTag = Array.from(root.querySelectorAll('.job-detail-summary__tag')).find(visible);
-    const rightPlace = explicitCityDistrict(rightTag?.textContent ?? '');
-    if (!rightPlace) return false;
+      return;
     const all = adapter
       .listTargets(document, href())
       .filter((item) => item.element.isConnected && visible(item.element));
@@ -451,7 +493,7 @@ export function createBatchReader(document: Document, href: () => string, adapte
         selected(item.element) === true &&
         item.element.closest('.job-split-layout__left .job-list-panel') === panels[0],
     );
-    if (selectedTargets.length !== 1 || selectedTargets[0].element !== target.element) return false;
+    if (selectedTargets.length !== 1 || selectedTargets[0].element !== target.element) return;
     if (
       all.some(
         (item) =>
@@ -459,19 +501,35 @@ export function createBatchReader(document: Document, href: () => string, adapte
           (item.platform_job_id || stableId(item.key)) === observationId,
       )
     )
-      return false;
+      return;
     const group = all.filter(
       (item) =>
         normalize(item.title) === normalize(target.title) &&
         normalize(item.company ?? '') === normalize(target.company ?? ''),
     );
-    const matches: BatchTarget[] = [];
-    for (const item of group) {
-      if (
-        !item.element.matches('.job-card') ||
-        item.element.closest('.job-split-layout__left .job-list-panel') !== panels[0]
+    if (
+      group.length < 2 ||
+      group.some(
+        (item) =>
+          !item.element.matches('.job-card') ||
+          item.element.closest('.job-split-layout__left .job-list-panel') !== panels[0],
       )
-        return false;
+    )
+      return;
+    return { root, group };
+  }
+
+  function unambiguousZhilianDistrict(
+    target: BatchTarget,
+    context: NonNullable<ReturnType<typeof zhilianIdentityContext>>,
+  ): boolean {
+    const rightTag = Array.from(context.root.querySelectorAll('.job-detail-summary__tag')).find(
+      visible,
+    );
+    const rightPlace = explicitCityDistrict(rightTag?.textContent ?? '');
+    if (!rightPlace) return false;
+    const matches: BatchTarget[] = [];
+    for (const item of context.group) {
       const locations = Array.from(item.element.querySelectorAll('.job-card__location')).filter(
         visible,
       );
@@ -480,10 +538,117 @@ export function createBatchReader(document: Document, href: () => string, adapte
       if (!place) return false;
       if (sameCityDistrict(place, rightPlace)) matches.push(item);
     }
-    return group.length > 1 && matches.length === 1 && matches[0].element === target.element;
+    return matches.length === 1 && matches[0].element === target.element;
   }
 
-  function detail(target: BatchTarget, values: BatchTarget[]): Observation | undefined {
+  function salaryGroup(target: BatchTarget) {
+    if (
+      !['www.zhaopin.com', 'sou.zhaopin.com', 'jobs.zhaopin.com'].includes(
+        new URL(href()).hostname,
+      ) ||
+      target.platform_job_id ||
+      stableId(target.key)
+    )
+      return;
+    const panels = Array.from(
+      document.querySelectorAll('.job-split-layout__left .job-list-panel'),
+    ).filter(visible);
+    if (panels.length !== 1) return;
+    const group = adapter
+      .listTargets(document, href())
+      .filter(
+        (item) =>
+          item.element.isConnected &&
+          visible(item.element) &&
+          normalize(item.title) === normalize(target.title) &&
+          normalize(item.company ?? '') === normalize(target.company ?? ''),
+      );
+    if (group.length < 2 || !group.some((item) => item.element === target.element)) return;
+    const metadata = [];
+    for (const item of group) {
+      if (
+        !item.element.matches('.job-card') ||
+        item.element.closest('.job-split-layout__left .job-list-panel') !== panels[0]
+      )
+        return;
+      const location = visibleField(item.element, '.job-card__location');
+      const salary = visibleField(item.element, '.job-card__salary');
+      const city = explicitCity(location ?? '');
+      const range = explicitYuanRange(salary ?? '');
+      if (!city || !range) return;
+      metadata.push({ item, location: location!, city, salary: salary!, range });
+    }
+    return {
+      metadata,
+      fingerprint: JSON.stringify(
+        metadata.map(({ item, location, salary }) => [
+          item.key,
+          item.title,
+          item.company,
+          item.platform_job_id,
+          normalize(location),
+          normalize(salary),
+        ]),
+      ),
+    };
+  }
+
+  function checkSalaryGroup(target: BatchTarget, frozen: ReturnType<typeof salaryGroup>) {
+    if (!frozen) return;
+    const live = salaryGroup(target);
+    if (
+      !live ||
+      live.fingerprint !== frozen.fingerprint ||
+      live.metadata.some(
+        (entry, index) => entry.item.element !== frozen.metadata[index]?.item.element,
+      )
+    )
+      throw new Error('同名职位的城市或薪资信息已变化，请重新开始批量读取');
+  }
+
+  function unambiguousZhilianSalary(
+    target: BatchTarget,
+    context: NonNullable<ReturnType<typeof zhilianIdentityContext>>,
+    frozen: ReturnType<typeof salaryGroup>,
+  ): boolean {
+    if (!frozen) return false;
+    checkSalaryGroup(target, frozen);
+    const salary = visibleField(context.root, '.job-detail-summary__salary');
+    const range = explicitYuanRange(salary ?? '');
+    const rightTag = Array.from(context.root.querySelectorAll('.job-detail-summary__tag')).find(
+      visible,
+    );
+    const location = rightTag ? visibleText(rightTag) : undefined;
+    const city = explicitCity(location ?? '');
+    if (!range || !city) return false;
+    const targetMetadata = frozen.metadata.find((entry) => entry.item.element === target.element)!;
+    const targetPlace = explicitAdministrativePlace(targetMetadata.location);
+    const rightPlace = explicitAdministrativePlace(location!);
+    if (targetPlace || rightPlace) {
+      const targetPair = explicitCityDistrict(targetMetadata.location);
+      const rightPair = explicitCityDistrict(location!);
+      if (!targetPair || !rightPair || !sameCityDistrict(targetPair, rightPair)) return false;
+    }
+    const matches = frozen.metadata.filter(
+      (entry) =>
+        sameAdministrativePart(entry.city, city, ['市']) &&
+        entry.range.low === range.low &&
+        entry.range.high === range.high,
+    );
+    // Month labels never make otherwise equal ranges unique. Nor may a visible label
+    // mismatch be silently discarded from the selected card's match.
+    return (
+      matches.length === 1 &&
+      matches[0].item.element === target.element &&
+      matches[0].range.months === range.months
+    );
+  }
+
+  function detail(
+    target: BatchTarget,
+    values: BatchTarget[],
+    frozenSalary?: ReturnType<typeof salaryGroup>,
+  ): Observation | undefined {
     const observations = adapter
       .observe(document, href())
       .filter((item) => item.page_kind === 'detail');
@@ -498,14 +663,26 @@ export function createBatchReader(document: Document, href: () => string, adapte
       if (targetId !== observationId) return;
     } else {
       if (!target.company || !observation.company) return;
-      const duplicates = values.filter(
+      const peers = ['www.zhaopin.com', 'sou.zhaopin.com', 'jobs.zhaopin.com'].includes(
+        new URL(href()).hostname,
+      )
+        ? adapter
+            .listTargets(document, href())
+            .filter((item) => item.element.isConnected && visible(item.element))
+        : values;
+      const duplicates = peers.filter(
         (item) =>
           normalize(item.title) === normalize(target.title) &&
           normalize(item.company ?? '') === normalize(target.company ?? ''),
       );
       if (duplicates.length !== 1) {
         if (duplicates.length < 2) return;
-        if (!unambiguousZhilianDistrict(target, observation, observationId))
+        const context = zhilianIdentityContext(target, observation, observationId);
+        if (
+          !context ||
+          (!unambiguousZhilianDistrict(target, context) &&
+            !unambiguousZhilianSalary(target, context, frozenSalary))
+        )
           throw new Error('同名同公司职位身份待核对；请在招聘网站人工打开独立职位详情核对');
       }
     }
@@ -561,6 +738,11 @@ export function createBatchReader(document: Document, href: () => string, adapte
     if (snapshot(current).pageKey !== command.pageKey)
       throw new Error('职位列表已变化，请重新开始');
     if (current.completed.size >= current.maxItems) return { ...snapshot(current), done: true };
+    const initialTarget =
+      command.kind === 'job'
+        ? targets().find((target) => target.key === command.targetKey)
+        : undefined;
+    const frozenSalary = initialTarget ? salaryGroup(initialTarget) : undefined;
     busy = true;
     const stepStarted = Date.now();
     try {
@@ -575,6 +757,7 @@ export function createBatchReader(document: Document, href: () => string, adapte
         expected = before.find((target) => target.key === command.targetKey);
         if (!expected) throw new Error('所选岗位已不在当前列表，请重新开始');
         if (current.completed.has(expected.key)) throw new Error('该岗位已读取，不会再次点击');
+        checkSalaryGroup(expected, frozenSalary);
       } else if (command.kind !== 'next_page') throw new Error('不支持的批量步骤');
       if (
         command.kind === 'next_page' &&
@@ -590,7 +773,7 @@ export function createBatchReader(document: Document, href: () => string, adapte
       let baseline: string | undefined = '';
       if (expected) {
         try {
-          baseline = JSON.stringify(detail(expected, before));
+          baseline = JSON.stringify(detail(expected, before, frozenSalary));
         } catch {
           /* detail still loading */
         }
@@ -603,19 +786,19 @@ export function createBatchReader(document: Document, href: () => string, adapte
           (!!(expected.platform_job_id || stableId(expected.key)) &&
             JSON.parse(baseline).platform_job_id ===
               (expected.platform_job_id || stableId(expected.key))));
+      if (expected) checkSalaryGroup(expected, frozenSalary);
       if (loadMore) safeLoadMore(loadMore, before);
       else if (!alreadySelected) safeClick(element, command.kind === 'next_page');
       const started = Date.now();
       let lastReadActionAt = started;
       let reselectionUsed = false;
       let emptySince: number | undefined;
-      let sawCompleteResult = baseline !== undefined && baseline !== '';
       let lastValue = '';
       let stableSince = started;
       let endedSince: number | undefined;
       let lastError = '';
       while (Date.now() - stepStarted < TIMEOUT_MS) {
-        await sleep(200, current);
+        await sleep(POLL_MS, current);
         safety(current, command.kind === 'next_page');
         if (Date.now() - stepStarted >= TIMEOUT_MS) break;
         const live = targets();
@@ -649,12 +832,14 @@ export function createBatchReader(document: Document, href: () => string, adapte
         }
         if (pageKey(live) !== command.pageKey)
           throw new Error('读取期间职位列表发生变化，请重新开始');
+        checkSalaryGroup(expected!, frozenSalary);
         let observation: Observation | undefined;
         try {
-          observation = detail(expected!, live);
+          observation = detail(expected!, live, frozenSalary);
         } catch (error) {
           lastError = error instanceof Error ? error.message : '';
         }
+        checkSalaryGroup(expected!, frozenSalary);
         if (!observation) {
           stableSince = Date.now();
           lastValue = '';
@@ -665,23 +850,19 @@ export function createBatchReader(document: Document, href: () => string, adapte
             normalize(liveTarget.title) === normalize(expected!.title) &&
             normalize(liveTarget.company ?? '') === normalize(expected!.company ?? '') &&
             liveTarget.platform_job_id === expected!.platform_job_id;
-          if (
-            !reselectionUsed &&
-            !sawCompleteResult &&
-            unchangedTarget &&
-            emptySelectedZhilianDetail(liveTarget, live)
-          ) {
+          if (!reselectionUsed && unchangedTarget && emptySelectedZhilianDetail(liveTarget, live)) {
             emptySince ??= Date.now();
             if (
               Date.now() - started >= ZHILIAN_INTERVAL_MS &&
               Date.now() - emptySince >= STABLE_MS &&
               Date.now() - lastClick >= actionInterval() &&
-              Date.now() - stepStarted <= TIMEOUT_MS - INTERVAL_MS
+              Date.now() - stepStarted <= TIMEOUT_MS - INTERVAL_MS - POLL_MS
             ) {
               safety(current);
               const finalTargets = targets();
               if (pageKey(finalTargets) !== command.pageKey)
                 throw new Error('读取期间职位列表发生变化，请重新开始');
+              checkSalaryGroup(expected!, frozenSalary);
               const finalTarget = finalTargets.find((item) => item.key === expected!.key);
               if (
                 finalTarget &&
@@ -689,7 +870,8 @@ export function createBatchReader(document: Document, href: () => string, adapte
                 normalize(finalTarget.title) === normalize(expected!.title) &&
                 normalize(finalTarget.company ?? '') === normalize(expected!.company ?? '') &&
                 finalTarget.platform_job_id === expected!.platform_job_id &&
-                emptySelectedZhilianDetail(finalTarget, finalTargets)
+                emptySelectedZhilianDetail(finalTarget, finalTargets) &&
+                Date.now() - stepStarted <= TIMEOUT_MS - INTERVAL_MS - POLL_MS
               ) {
                 reselectionUsed = true;
                 safeClick(finalTarget.element, false);
@@ -700,7 +882,6 @@ export function createBatchReader(document: Document, href: () => string, adapte
           } else emptySince = undefined;
           continue;
         }
-        sawCompleteResult = true;
         emptySince = undefined;
         const value = JSON.stringify(observation);
         if (!alreadySelected && value === baseline) {
@@ -713,6 +894,7 @@ export function createBatchReader(document: Document, href: () => string, adapte
         }
         if (Date.now() - stableSince >= STABLE_MS && Date.now() - lastReadActionAt >= INTERVAL_MS) {
           safety(current);
+          checkSalaryGroup(expected!, frozenSalary);
           current.completed.add(expected!.key);
           return {
             ...snapshot(current),
