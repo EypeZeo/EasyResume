@@ -276,6 +276,7 @@ export default defineBackground(() => {
       throw new Error('当前是登录、验证或个人页面，请处理后打开职位列表再读取');
     let target = active;
     let navigated = false;
+    let entryScope: URL | undefined;
     let needsEntry = false;
     const expectedPlatform = request.platform ?? classifyRecruitingPage(active.url).platform;
     if (request.tabId !== undefined) {
@@ -349,6 +350,7 @@ export default defineBackground(() => {
           })),
         );
       if (!chosen) throw new Error('未找到职位入口，请先在 BOSS 或智联网页点击“职位”');
+      entryScope = new URL(chosen.url);
       await browser.tabs.update(target.id!, { url: chosen.url, active: true });
       checkNavigation();
       navigated = true;
@@ -367,6 +369,18 @@ export default defineBackground(() => {
       const location = classifyRecruitingPage(live.url);
       if (location.platform !== selectedPlatform || (!navigated && live.url !== selectedHref))
         throw new Error('招聘页面的平台或列表范围已变化，请重新选择');
+      if (entryScope && ['list', 'detail'].includes(location.kind)) {
+        const destination = new URL(live.url!);
+        // Preserve every explicit entry filter, including repeated values. A bare entry
+        // may acquire the site's defaults; only the observed ka navigation tag is ignored.
+        for (const key of new Set(entryScope.searchParams.keys()))
+          if (
+            key !== 'ka' &&
+            JSON.stringify(destination.searchParams.getAll(key)) !==
+              JSON.stringify(entryScope.searchParams.getAll(key))
+          )
+            throw new Error('职位入口的搜索条件已变化，请重新定位后确认；未读取或保存');
+      }
       if (['verification', 'login', 'chat'].includes(location.kind))
         throw new Error('招聘页面进入登录、验证或个人页面，已停止定位');
       let page: RecruitingPageStatus;

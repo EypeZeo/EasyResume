@@ -183,6 +183,27 @@ describe('recruitment navigation integration', () => {
     ]);
   });
 
+  it('rejects a different search reached after following an observed homepage entry', async () => {
+    vi.useFakeTimers();
+    tabs = [makeTab(1, 'https://www.zhipin.com/zhengzhou/', true)];
+    const differentSearch = list.replace('query=Linux', 'query=Citrix');
+    mocks.update.mockImplementation(async (id: number, changes: Partial<Tab>) => {
+      const target = tabs.find((item) => item.id === id)!;
+      Object.assign(target, changes);
+      if (changes.url) target.url = differentSearch;
+      return target;
+    });
+    await load();
+    const result = send({ type: 'READ', platform: 'boss' });
+    await vi.advanceTimersByTimeAsync(12000);
+    const response = await result;
+    expect(mocks.update).toHaveBeenCalledWith(1, { url: list, active: true });
+    expect.soft(response).toHaveProperty('error');
+    expect
+      .soft(mocks.sendMessage.mock.calls.some((call) => call[1].type === 'COLLECT_CURRENT_PAGE'))
+      .toBe(false);
+  });
+
   it('locates one same-platform home page from the workbench and follows only its observed entry', async () => {
     vi.useFakeTimers();
     tabs = [
@@ -199,6 +220,72 @@ describe('recruitment navigation integration', () => {
     ]);
     expect(mocks.sendMessage.mock.calls.every((call) => call[0] === 2)).toBe(true);
   });
+
+  it.each([
+    ['READ', list, list.replace('city=101180100', 'city=101010100')],
+    ['READ_SELECTION', list, list.replace('&query=Linux', '')],
+    ['LOCATE_JOB_PAGE', list + '&industry=IT&industry=Services', list + '&industry=IT'],
+    [
+      'BATCH_START',
+      'https://www.zhaopin.com/jobs/?kw=Linux&jl=719',
+      'https://www.zhaopin.com/jobs/?kw=Citrix&jl=719',
+    ],
+  ])(
+    'stops %s when an explicit entry filter changes or disappears',
+    async (type, entry, destination) => {
+      vi.useFakeTimers();
+      const platform = entry.includes('zhipin.com') ? 'boss' : 'zhilian';
+      const home = platform === 'boss' ? 'https://www.zhipin.com/' : 'https://www.zhaopin.com/';
+      tabs = [makeTab(1, home, true)];
+      mocks.sendMessage.mockImplementation(async () => ({
+        page: { platform, kind: 'home' },
+        entries: [{ url: entry, text: '职位' }],
+      }));
+      mocks.update.mockImplementation(async (id, changes) => {
+        const target = tabs.find((item) => item.id === id)!;
+        Object.assign(target, changes);
+        if (changes.url) target.url = destination;
+        return target;
+      });
+      await load();
+      const result = send({ type, platform });
+      await vi.advanceTimersByTimeAsync(500);
+      expect((await result).error).toContain('搜索条件已变化');
+      expect(mocks.sendMessage.mock.calls.map((call) => call[1].type)).toEqual(['PAGE_STATUS']);
+      expect(mocks.update).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    [list + '&ka=header-jobs', list + '&ka=list'],
+    ['https://www.zhipin.com/web/geek/jobs', list],
+  ])(
+    'keeps the observed navigation tag and unspecified site defaults out of filter constraints',
+    async (entry, destination) => {
+      vi.useFakeTimers();
+      tabs = [makeTab(1, 'https://www.zhipin.com/', true)];
+      mocks.sendMessage.mockImplementation(async (_id, message) => {
+        const href = tabs[0].url;
+        if (message.type === 'PAGE_STATUS')
+          return {
+            ...status(href),
+            entries: href.includes('/web/geek/jobs') ? [] : [{ url: entry, text: '职位' }],
+          };
+        return { observations: [{ title: '合成岗位' }], source: { href, platform: 'boss' } };
+      });
+      mocks.update.mockImplementation(async (id, changes) => {
+        const target = tabs.find((item) => item.id === id)!;
+        Object.assign(target, changes);
+        if (changes.url) target.url = destination;
+        return target;
+      });
+      await load();
+      const result = send({ type: 'READ', platform: 'boss' });
+      await vi.advanceTimersByTimeAsync(500);
+      expect(await result).toHaveProperty('observations');
+      expect(mocks.update).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it('requires a choice between multiple homes and allows a chosen home only through its observed entry', async () => {
     vi.useFakeTimers();
