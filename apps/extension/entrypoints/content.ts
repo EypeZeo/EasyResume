@@ -9,7 +9,7 @@ import {
   visible,
   diagnosePage,
 } from '../lib/observe';
-import { createBatchReader, type BatchStep } from '../lib/batch';
+import { BatchLoadTimeout, createBatchReader, type BatchStep } from '../lib/batch';
 import {
   classifyRecruitingPage,
   observedRecruitingEntrypoints,
@@ -51,10 +51,14 @@ export default defineContentScript({
           ),
           canRead: false,
           listCount: 0,
+          documentId: batch.documentId,
+          safeForRefresh: false,
         };
         if (page.kind === 'list' || page.kind === 'detail') {
           try {
             result.listCount = listTargets(document, location.href).length;
+            batch.checkPage();
+            result.safeForRefresh = page.kind === 'list' && result.listCount > 0;
             const observations = observe(document, location.href);
             result.canRead = observations.length > 0;
             if (observations.some((observation) => !observation.company))
@@ -72,41 +76,60 @@ export default defineContentScript({
           .step(message as BatchStep)
           .then(sendResponse)
           .catch((error) =>
-            sendResponse({ error: error instanceof Error ? error.message : '读取失败，已暂停' }),
+            sendResponse({
+              error: error instanceof Error ? error.message : '读取失败，已暂停',
+              ...(error instanceof BatchLoadTimeout ? { code: error.code } : {}),
+            }),
           );
         return true;
       }
-      if (message?.type === 'BATCH_PREPARE' || message?.type === 'BATCH_STOP') {
-        try {
-          sendResponse(
-            message.type === 'BATCH_PREPARE'
-              ? batch.prepare(message.taskId, message.options)
-              : batch.stop(message.taskId),
+      if (message?.type === 'BATCH_STOP') {
+        const result = batch.stop(message.taskId);
+        void batch.whenIdle().then(() =>
+          sendResponse({
+            ...result,
+            settled: true,
+            taskId: message.taskId,
+            documentId: batch.documentId,
+          }),
+        );
+        return true;
+      }
+      if (message?.type === 'BATCH_PREPARE') {
+        void batch
+          .clearOnboarding()
+          .then(() => sendResponse(batch.prepare(message.taskId, message.options)))
+          .catch((error) =>
+            sendResponse({ error: error instanceof Error ? error.message : '无法开始批量读取' }),
           );
-        } catch (error) {
-          sendResponse({ error: error instanceof Error ? error.message : '无法开始批量读取' });
-        }
-        return;
+        return true;
       }
       if (!['COLLECT_CURRENT_PAGE', 'COLLECT_SELECTION'].includes(message?.type)) return;
-      try {
-        const observations =
-          message.type === 'COLLECT_SELECTION'
-            ? observeSelection(document, location.href, window.getSelection()?.toString() ?? '')
-            : observe(document, location.href);
-        sendResponse({
-          observations,
-          source: { href: location.href, platform: classifyRecruitingPage(location.href).platform },
-          ...(message.type === 'COLLECT_CURRENT_PAGE'
-            ? { diagnostics: diagnosePage(document, location.href) }
-            : {}),
+      void batch
+        .clearOnboarding()
+        .then(() => {
+          const observations =
+            message.type === 'COLLECT_SELECTION'
+              ? observeSelection(document, location.href, window.getSelection()?.toString() ?? '')
+              : observe(document, location.href);
+          sendResponse({
+            observations,
+            source: {
+              href: location.href,
+              platform: classifyRecruitingPage(location.href).platform,
+            },
+            ...(message.type === 'COLLECT_CURRENT_PAGE'
+              ? { diagnostics: diagnosePage(document, location.href) }
+              : {}),
+          });
+        })
+        .catch((error) => {
+          sendResponse({
+            error: error instanceof Error ? error.message : '读取失败',
+            diagnostics: diagnosePage(document, location.href),
+          });
         });
-      } catch (error) {
-        sendResponse({
-          error: error instanceof Error ? error.message : '读取失败',
-          diagnostics: diagnosePage(document, location.href),
-        });
-      }
+      return true;
     });
   },
 });

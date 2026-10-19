@@ -1,4 +1,5 @@
 import type { Observation } from './observe';
+import { createOnboardingGuard } from './onboarding';
 
 export type BatchTarget = {
   key: string;
@@ -23,8 +24,9 @@ export type BatchSnapshot = {
   pageKey: string;
   pageNumber: number;
   completed: number;
-  targets: { key: string; title: string; company?: string }[];
+  targets: { key: string; title: string; company?: string; platform_job_id?: string }[];
   canNextPage: boolean;
+  canLoadMore?: boolean;
   endOfList?: boolean;
 };
 
@@ -56,6 +58,10 @@ const POLL_MS = 200;
 const DANGEROUS_ACTION =
   /^(立即沟通|立即投递|投递简历|申请职位|发送|发送简历|收藏|取消收藏|打招呼|申请|沟通|登录|注册)$/;
 const normalize = (value: string) => value.replace(/[\s\u200b-\u200d\ufeff]+/g, '').trim();
+
+export class BatchLoadTimeout extends Error {
+  readonly code = 'DETAIL_LOAD_TIMEOUT';
+}
 
 function visible(element: Element): boolean {
   for (let node: Element | null = element; node; node = node.parentElement) {
@@ -207,8 +213,10 @@ function rightPublicZhilianId(root: Element, href: string, title: string): strin
 /** Runs exactly one bounded DOM interaction. The background owns the loop and persistence. */
 export function createBatchReader(document: Document, href: () => string, adapter: BatchAdapter) {
   const documentId = crypto.randomUUID();
+  const onboarding = createOnboardingGuard(document, href());
   let session: Session | undefined;
   let busy = false;
+  const idleWaiters = new Set<() => void>();
   let lastClick = -Infinity;
   const actionInterval = () =>
     ['www.zhaopin.com', 'sou.zhaopin.com', 'jobs.zhaopin.com'].includes(new URL(href()).hostname)
@@ -234,9 +242,13 @@ export function createBatchReader(document: Document, href: () => string, adapte
 
   function safety(current: Session, allowPageQueryChange = false): void {
     if (current.abort.signal.aborted) throw new Error(current.reason);
+    pageSafety(current.href, allowPageQueryChange);
+  }
+
+  function pageSafety(expectedHref: string, allowPageQueryChange = false): void {
     if (document.visibilityState !== 'visible') throw new Error('请保持招聘页面在前台');
     const url = new URL(href());
-    const expected = new URL(current.href);
+    const expected = new URL(expectedHref);
     const boss = ['www.zhipin.com', 'zhipin.com'].includes(url.hostname);
     const zhilian = ['www.zhaopin.com', 'sou.zhaopin.com', 'jobs.zhaopin.com'].includes(
       url.hostname,
@@ -305,8 +317,17 @@ export function createBatchReader(document: Document, href: () => string, adapte
       pageKey: pageKey(values),
       pageNumber: current.pageNumber,
       completed: current.completed.size,
-      targets: values.map(({ key, title, company }) => ({ key, title, company })),
+      targets: values.map(({ key, title, company, platform_job_id }) => ({
+        key,
+        title,
+        company,
+        platform_job_id,
+      })),
       endOfList,
+      canLoadMore:
+        !endOfList &&
+        !adapter.nextPageTarget(document, href()) &&
+        !!adapter.loadMoreTarget?.(document, href()),
       canNextPage:
         current.allowNextPage &&
         current.pageNumber < current.maxPages &&
@@ -346,6 +367,7 @@ export function createBatchReader(document: Document, href: () => string, adapte
       reason: '',
     };
     safety(current);
+    onboarding.assertClear();
     const result = snapshot(current);
     if (!result.targets.length) throw new Error('当前页没有支持的职位列表，请打开招聘列表后重试');
     session = current;
@@ -727,6 +749,34 @@ export function createBatchReader(document: Document, href: () => string, adapte
     ).some(visible);
   }
 
+  function emptySelectedDetail(target: BatchTarget, values: BatchTarget[]): boolean {
+    if (emptySelectedZhilianDetail(target, values)) return true;
+    if (
+      !['www.zhipin.com', 'zhipin.com'].includes(new URL(href()).hostname) ||
+      !(target.platform_job_id || stableId(target.key))
+    )
+      return false;
+    const roots = Array.from(document.querySelectorAll('.job-detail-container')).filter(visible);
+    const panels = Array.from(
+      document.querySelectorAll('.job-list-container > ul.rec-job-list'),
+    ).filter(visible);
+    const selectedTargets = values.filter((item) => selected(item.element) === true);
+    return (
+      roots.length === 1 &&
+      panels.length === 1 &&
+      target.element.closest('ul.rec-job-list') === panels[0] &&
+      selectedTargets.length === 1 &&
+      selectedTargets[0].element === target.element &&
+      !roots[0].textContent?.trim() &&
+      roots[0].childElementCount === 0 &&
+      !Array.from(
+        document.querySelectorAll(
+          '[aria-busy="true"],[role="progressbar"],.loading,.is-loading,.skeleton',
+        ),
+      ).some(visible)
+    );
+  }
+
   async function step(
     command: BatchStep,
   ): Promise<BatchSnapshot & { observation?: Observation; done?: boolean }> {
@@ -748,6 +798,8 @@ export function createBatchReader(document: Document, href: () => string, adapte
     try {
       await sleep(Math.max(0, actionInterval() - (Date.now() - lastClick)), current);
       safety(current);
+      await createOnboardingGuard(document, href()).clear(() => safety(current));
+      onboarding.assertClear();
       if (Date.now() - stepStarted >= TIMEOUT_MS) throw new Error('等待职位详情超时，已暂停');
       if (snapshot(current).pageKey !== command.pageKey)
         throw new Error('职位列表已变化，请重新开始');
@@ -800,6 +852,7 @@ export function createBatchReader(document: Document, href: () => string, adapte
       while (Date.now() - stepStarted < TIMEOUT_MS) {
         await sleep(POLL_MS, current);
         safety(current, command.kind === 'next_page');
+        onboarding.assertClear();
         if (Date.now() - stepStarted >= TIMEOUT_MS) break;
         const live = targets();
         if (command.kind === 'next_page') {
@@ -903,6 +956,16 @@ export function createBatchReader(document: Document, href: () => string, adapte
           };
         }
       }
+      const finalTargets = targets();
+      const finalTarget = finalTargets.find((target) => target.key === command.targetKey);
+      if (
+        command.kind === 'job' &&
+        finalTarget &&
+        finalTarget.element === initialTarget?.element &&
+        pageKey(finalTargets) === command.pageKey &&
+        emptySelectedDetail(finalTarget, finalTargets)
+      )
+        throw new BatchLoadTimeout('职位详情加载超时且持续为空，未导入本条');
       throw new Error(
         loadMore
           ? '等待新增职位超时，已暂停；已经保存的职位会保留，可手动加载后继续'
@@ -913,12 +976,26 @@ export function createBatchReader(document: Document, href: () => string, adapte
       throw error;
     } finally {
       busy = false;
+      for (const resolve of idleWaiters) resolve();
+      idleWaiters.clear();
     }
   }
 
   return {
     prepare,
     step,
+    documentId,
+    async clearOnboarding() {
+      const expectedHref = href();
+      await createOnboardingGuard(document, expectedHref).clear(() => pageSafety(expectedHref));
+      onboarding.assertClear();
+    },
+    checkPage() {
+      pageSafety(href());
+    },
+    whenIdle(): Promise<void> {
+      return busy ? new Promise((resolve) => idleWaiters.add(resolve)) : Promise.resolve();
+    },
     stop(taskId: string) {
       if (session?.id === taskId) cancel();
       return { stopped: session?.id === taskId };

@@ -1,6 +1,11 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createBatchReader, type BatchAdapter, type BatchSnapshot } from './batch';
+import {
+  BatchLoadTimeout,
+  createBatchReader,
+  type BatchAdapter,
+  type BatchSnapshot,
+} from './batch';
 import { listExhausted, loadMoreTarget, observe, type Observation } from './observe';
 
 const url = 'https://www.zhipin.com/web/geek/job-recommend';
@@ -308,6 +313,36 @@ describe('bounded readonly batch steps on synthetic DOM', () => {
     await vi.advanceTimersByTimeAsync(6000);
     expect((await next).observation?.platform_job_id).toBe('b');
     expect(test.clicks()).toBe(2);
+  });
+
+  it('acknowledges idle only after the stopped step has settled', async () => {
+    const test = fixture();
+    const snapshot = test.reader.prepare('idle_ack');
+    expect(snapshot.documentId).toBe(test.reader.documentId);
+    expect(snapshot.targets[0].platform_job_id).toBe('a');
+    const pending = test.reader.step(job(snapshot));
+    const rejection = expect(pending).rejects.toThrow('暂停');
+    await vi.advanceTimersByTimeAsync(200);
+    test.reader.stop('idle_ack');
+    await test.reader.whenIdle();
+    await rejection;
+    expect(test.reader.prepare('after_idle').completed).toBe(0);
+  });
+
+  it('does not prepare or click through a visible unknown modal', async () => {
+    const test = fixture();
+    const modal = document.createElement('div');
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+    modal.textContent = '其他操作确认';
+    document.body.append(modal);
+    vi.spyOn(modal, 'getBoundingClientRect').mockReturnValue({
+      left: 0, top: 0, right: 400, bottom: 200, width: 400, height: 200,
+      x: 0, y: 0, toJSON: () => ({}),
+    });
+    expect(() => test.reader.prepare('obstructed')).toThrow('遮罩');
+    await expect(test.reader.clearOnboarding()).rejects.toThrow('遮罩');
+    expect(test.clicks()).toBe(0);
   });
 
   it('permits only one in-flight step and never repeats a completed card', async () => {
@@ -911,6 +946,57 @@ describe('one bounded reselection of an empty selected Zhilian detail', () => {
     expect(test.clickCount()).toBe(2);
     await expect(test.reader.step(job(snapshot))).rejects.toThrow('超时');
     expect(test.clickCount()).toBe(2);
+  });
+
+  it('returns a typed refresh candidate only for the observed empty selected detail', async () => {
+    const test = emptyZhilianFixture();
+    const snapshot = test.reader.prepare('typed_empty');
+    const rejection = expect(test.reader.step(job(snapshot))).rejects.toBeInstanceOf(
+      BatchLoadTimeout,
+    );
+    await vi.advanceTimersByTimeAsync(15000);
+    await rejection;
+  });
+
+  it('recognizes the real empty-detail parser exception without masking an unknown subtree', async () => {
+    const test = emptyZhilianFixture();
+    test.adapter.observe = () => {
+      throw new Error('右侧职位详情为空，请在招聘网站重新选择该职位');
+    };
+    const snapshot = test.reader.prepare('real_empty_error');
+    const rejection = expect(test.reader.step(job(snapshot))).rejects.toBeInstanceOf(
+      BatchLoadTimeout,
+    );
+    await vi.advanceTimersByTimeAsync(15000);
+    await rejection;
+  });
+
+  it('marks only the empty BOSS detail container with one selected stable-id card as refreshable', async () => {
+    const test = bossScrollingFixture();
+    test.adapter.observe = () => [];
+    document.querySelector('.card')!.classList.add('active');
+    const root = document.createElement('section');
+    root.className = 'job-detail-container';
+    document.body.append(root);
+    const snapshot = test.reader.prepare('boss_empty');
+    const rejection = expect(test.reader.step(job(snapshot))).rejects.toBeInstanceOf(
+      BatchLoadTimeout,
+    );
+    await vi.advanceTimersByTimeAsync(15000);
+    await rejection;
+  });
+
+  it('does not mark a stale populated detail as refreshable', async () => {
+    const test = emptyZhilianFixture();
+    test.onClick(() => {
+      test.module.innerHTML = '<p>另一个职位的旧内容</p>';
+    });
+    const snapshot = test.reader.prepare('populated_stale');
+    const rejection = expect(test.reader.step(job(snapshot))).rejects.not.toBeInstanceOf(
+      BatchLoadTimeout,
+    );
+    await vi.advanceTimersByTimeAsync(15000);
+    await rejection;
   });
 
   it.each(['stop', 'hidden', 'user', 'challenge', 'list', 'selection'] as const)(

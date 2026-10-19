@@ -36,12 +36,52 @@ afterEach(async () => {
   await act(async () => root.unmount());
   host.remove();
   window.removeEventListener('easyresume:browser-command', listener);
+  vi.useRealTimers();
 });
 async function click(text) {
   const button = [...host.querySelectorAll('button')].find((item) => item.textContent === text);
   expect(button).toBeTruthy();
   await act(async () => button.click());
 }
+it('keeps automatic refresh off by default and independent from auto page loading', async () => {
+  await click('开始浏览器批量读取');
+  expect(commands.at(-1)).toMatchObject({
+    type: 'BATCH_START',
+    autoPage: false,
+    autoRefresh: false,
+  });
+  const refresh = [...host.querySelectorAll('input[type="checkbox"]')].find((input) =>
+    input.parentElement.textContent.includes('加载失败时自动刷新一次并恢复'),
+  );
+  await act(async () => refresh.click());
+  await click('开始浏览器批量读取');
+  expect(commands.at(-1)).toMatchObject({
+    type: 'BATCH_START',
+    autoPage: false,
+    autoRefresh: true,
+  });
+});
+it('polls recovery until completion while blocking other operations and retaining pause/stop', async () => {
+  vi.useFakeTimers();
+  respond = () => ({ status: 'recovering', refreshes: 1, message: '正在刷新并恢复' });
+  await click('检查批量任务');
+  expect(host.textContent).toContain('已刷新 1 次');
+  expect(host.querySelector('select').disabled).toBe(true);
+  for (const input of host.querySelectorAll('input')) expect(input.disabled).toBe(true);
+  for (const label of ['读取浏览器当前职位', '定位招聘页面'])
+    expect(
+      [...host.querySelectorAll('button')].find((button) => button.textContent === label).disabled,
+    ).toBe(true);
+  expect(host.textContent).not.toContain('开始浏览器批量读取');
+  expect(host.textContent).toContain('暂停批量读取');
+  expect(host.textContent).toContain('停止批量读取');
+  respond = () => ({ status: 'completed', refreshes: 1, message: '恢复后已完成' });
+  await act(async () => vi.advanceTimersByTimeAsync(2000));
+  expect(commands.at(-1).type).toBe('BATCH_STATUS');
+  expect(host.textContent).toContain('恢复后已完成');
+  expect(host.querySelector('select').disabled).toBe(false);
+  expect(saved).toHaveBeenCalledOnce();
+});
 it('saves reviewed observations without navigation-only parameters', async () => {
   respond = ({ type }) =>
     type === 'READ'

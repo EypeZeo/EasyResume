@@ -515,6 +515,7 @@ describe('paused batch page scope', () => {
     message: '已暂停',
     tabId: 7,
     taskId: 'old-task',
+    documentId: 'new-document',
     installation: connection.installation,
     seen: ['old-job'],
     scope,

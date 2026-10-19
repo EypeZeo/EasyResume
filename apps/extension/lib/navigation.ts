@@ -12,6 +12,8 @@ export type RecruitingPageStatus = {
   entries: RecruitingEntrypoint[];
   canRead: boolean;
   listCount: number;
+  documentId?: string;
+  safeForRefresh?: boolean;
   message?: string;
   diagnostics?: unknown;
 };

@@ -299,6 +299,7 @@ describe('background connection and cancellation boundary', () => {
   it('does not save a late batch observation after pausing during connection validation', async () => {
     const step = deferred<any>();
     const checking = deferred<any>();
+    let preparedTaskId = '';
     const snapshot = {
       taskId: 'synthetic-task',
       documentId: 'synthetic-document',
@@ -309,15 +310,16 @@ describe('background connection and cancellation boundary', () => {
       targets: [{ key: 'first', title: '合成岗位' }],
       canNextPage: false,
     };
-    mocks.sendMessage.mockImplementation(async (_tab, message) =>
-      message.type === 'PAGE_STATUS'
+    mocks.sendMessage.mockImplementation(async (_tab, message) => {
+      if (message.type === 'BATCH_PREPARE') preparedTaskId = message.taskId;
+      return message.type === 'PAGE_STATUS'
         ? { page: { platform: 'boss', kind: 'list' }, entries: [], canRead: true, listCount: 1 }
         : message.type === 'BATCH_PREPARE'
           ? { ...snapshot, taskId: message.taskId }
           : message.type === 'BATCH_STEP'
             ? step.promise
-            : { stopped: true },
-    );
+            : { stopped: true };
+    });
     mocks.reconnect
       .mockResolvedValueOnce({ state: 'connected', connection })
       .mockReturnValueOnce(checking.promise);
@@ -326,6 +328,7 @@ describe('background connection and cancellation boundary', () => {
     now += 5000;
     step.resolve({
       ...snapshot,
+      taskId: preparedTaskId,
       observation: { url: 'https://www.zhipin.com/job_detail/synthetic.html', title: '合成岗位' },
     });
     await settle();

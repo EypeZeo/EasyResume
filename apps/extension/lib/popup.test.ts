@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import markup from '../entrypoints/popup/index.html?raw';
+import sidepanelMarkup from '../entrypoints/sidepanel/index.html?raw';
 
 const { sendMessage } = vi.hoisted(() => ({ sendMessage: vi.fn() }));
 vi.mock('wxt/browser', () => ({
@@ -225,6 +226,77 @@ describe('compact extension workflow', () => {
 });
 
 describe('bounded batch reading controls', () => {
+  it('offers the same default-off refresh control in the side panel', async () => {
+    document.body.innerHTML = sidepanelMarkup
+      .match(/<body[^>]*>([\s\S]*?)<\/body>/i)![1]
+      .replace(/<script[\s\S]*?<\/script>/gi, '');
+    await load();
+    expect(input('auto-refresh').checked).toBe(false);
+    input('auto-refresh').click();
+    button('batch-start').click();
+    await settle();
+    expect(sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'BATCH_START',
+        autoRefresh: true,
+        autoPage: false,
+      }),
+    );
+  });
+
+  it('opts into one page refresh independently from automatic page loading', async () => {
+    await load();
+    expect(input('auto-refresh').checked).toBe(false);
+    input('auto-refresh').click();
+    button('batch-start').click();
+    await settle();
+    expect(sendMessage).toHaveBeenCalledWith({
+      type: 'BATCH_START',
+      maxJobs: 20,
+      maxPages: 1,
+      autoPage: false,
+      autoRefresh: true,
+    });
+  });
+
+  it('keeps recovery in progress, locks options and retains pause and stop', async () => {
+    let current = { ...idleBatch, status: 'recovering', refreshes: 1 };
+    sendMessage.mockImplementation(async (message: { type: string }) => {
+      if (message.type === 'STATUS') return health;
+      if (message.type === 'BATCH_PAUSE') current = { ...current, status: 'paused' };
+      if (message.type === 'BATCH_STOP') current = { ...current, status: 'stopped' };
+      return current;
+    });
+    await load();
+    expect(document.getElementById('batch-state')?.textContent).toBe('正在刷新并恢复');
+    expect(document.getElementById('batch-message')?.textContent).toContain('已刷新 1 次');
+    for (const id of [
+      'read',
+      'read-selection',
+      'save',
+      'locate-page',
+      'batch-start',
+      'auto-page',
+      'auto-refresh',
+      'max-jobs',
+      'max-pages',
+    ])
+      expect(input(id).disabled).toBe(true);
+    expect(button('batch-start').hidden).toBe(true);
+    expect(button('batch-pause').hidden).toBe(false);
+    expect(button('batch-pause').disabled).toBe(false);
+    expect(button('batch-stop').hidden).toBe(false);
+    expect(button('batch-stop').disabled).toBe(false);
+    button('batch-pause').click();
+    await settle();
+    expect(sendMessage).toHaveBeenCalledWith({ type: 'BATCH_PAUSE' });
+    expect(input('auto-refresh').disabled).toBe(true);
+    button('batch-stop').click();
+    await settle();
+    expect(sendMessage).toHaveBeenCalledWith({ type: 'BATCH_STOP' });
+    expect(input('auto-refresh').disabled).toBe(false);
+  });
+
   it('only starts after a user click and defaults to the current page', async () => {
     let current = { ...idleBatch };
     sendMessage.mockImplementation(
@@ -247,6 +319,7 @@ describe('bounded batch reading controls', () => {
       maxJobs: 20,
       maxPages: 1,
       autoPage: false,
+      autoRefresh: false,
     });
     expect(button('read').disabled).toBe(true);
     expect(button('batch-pause').hidden).toBe(false);
@@ -276,6 +349,7 @@ describe('bounded batch reading controls', () => {
       maxJobs: 20,
       maxPages: 2,
       autoPage: true,
+      autoRefresh: false,
     });
   });
 
@@ -296,7 +370,7 @@ describe('bounded batch reading controls', () => {
     expect(document.getElementById('batch-panel')?.hidden).toBe(false);
     expect(button('batch-tab').getAttribute('aria-selected')).toBe('true');
     expect(document.getElementById('batch-saved')?.textContent).toBe('7');
-    expect(document.getElementById('batch-message')?.textContent).toBe('正在读取第 10 条');
+    expect(document.getElementById('batch-message')?.textContent).toContain('正在读取第 10 条');
     expect(input('max-jobs').disabled).toBe(true);
     expect(button('save').disabled).toBe(true);
     expect(button('batch-start').hidden).toBe(true);

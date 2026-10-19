@@ -237,6 +237,23 @@ describe('paired workbench read-only command transport', () => {
     blocked: false,
   };
 
+  it('forwards bounded refresh opt-in independently from page loading and defaults it off', async () => {
+    await load();
+    issue('BATCH_START', { autoPage: false, autoRefresh: true, tabId: 3 });
+    await settle();
+    expect(forwarded()[0][0].command).toEqual({
+      type: 'BATCH_START',
+      tabId: 3,
+      maxJobs: 20,
+      maxPages: 1,
+      autoPage: false,
+      autoRefresh: true,
+    });
+    issue('BATCH_START', { autoPage: true, maxPages: 2 });
+    await settle();
+    expect(forwarded()[1][0].command).toMatchObject({ autoPage: true, autoRefresh: false });
+  });
+
   it('does not read automatically and only returns public results with the matching nonce', async () => {
     await load();
     expect(forwarded()).toHaveLength(0);
@@ -293,9 +310,10 @@ describe('paired workbench read-only command transport', () => {
     issue('BATCH_START', { maxJobs: 101 });
     issue('BATCH_START', { maxPages: 6 });
     issue('BATCH_START', { autoPage: 'true' });
+    issue('BATCH_START', { autoRefresh: 'true' });
     await settle();
     expect(forwarded()).toHaveLength(0);
-    expect(result).toHaveBeenCalledTimes(17);
+    expect(result).toHaveBeenCalledTimes(18);
     expect(result.mock.calls.every(([event]) => !!event.detail.result.error)).toBe(true);
   });
 

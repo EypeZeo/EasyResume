@@ -9,7 +9,7 @@ const commandFields: Record<string, string[]> = {
   READ: ['platform', 'purpose', 'tabId'],
   SAVE: ['observations'],
   BATCH_STATUS: [],
-  BATCH_START: ['platform', 'purpose', 'tabId', 'maxJobs', 'maxPages', 'autoPage'],
+  BATCH_START: ['platform', 'purpose', 'tabId', 'maxJobs', 'maxPages', 'autoPage', 'autoRefresh'],
   BATCH_PAUSE: [],
   BATCH_RESUME: ['platform', 'purpose', 'tabId'],
   BATCH_STOP: [],
@@ -52,6 +52,9 @@ function pageCommand(input: Record<string, unknown>): Record<string, unknown> {
     if (input.autoPage !== undefined && typeof input.autoPage !== 'boolean')
       throw new Error('自动翻页设置无效');
     command.autoPage = input.autoPage === true;
+    if (input.autoRefresh !== undefined && typeof input.autoRefresh !== 'boolean')
+      throw new Error('自动刷新设置无效');
+    command.autoRefresh = input.autoRefresh === true;
   }
   if (type === 'SAVE') {
     if (

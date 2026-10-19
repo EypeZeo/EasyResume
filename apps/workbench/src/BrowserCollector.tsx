@@ -10,6 +10,7 @@ export default function BrowserCollector({ onSaved }: { onSaved: () => Promise<u
   const [batch, setBatch] = useState<any>(null);
   const [maxJobs, setMaxJobs] = useState(20);
   const [autoPage, setAutoPage] = useState(false);
+  const [autoRefresh, setAutoRefresh] = useState(false);
   const [selectedTab, setSelectedTab] = useState<number>();
   const retry = useRef<{ type: string; payload: object } | undefined>(undefined);
   const pending = useRef(
@@ -60,7 +61,11 @@ export default function BrowserCollector({ onSaved }: { onSaved: () => Promise<u
     let disposed = false;
     void send('BATCH_STATUS')
       .then((result) => {
-        if (!disposed && result.status) setBatch((previous: any) => previous ?? result);
+        if (!disposed && result.status) {
+          setBatch((previous: any) => previous ?? result);
+          if (result.status === 'recovering')
+            setMessage(result.message || '正在刷新招聘页面并恢复批量读取…');
+        }
       })
       .catch(() => {});
     return () => {
@@ -108,7 +113,12 @@ export default function BrowserCollector({ onSaved }: { onSaved: () => Promise<u
         void onSaved().catch(() => {});
       } else if (result.status) {
         setBatch(result);
-        setMessage(result.message || '批量任务状态已更新');
+        setMessage(
+          result.message ||
+            (result.status === 'recovering'
+              ? '正在刷新招聘页面并恢复批量读取…'
+              : '批量任务状态已更新'),
+        );
       } else setMessage(result.message || '已定位招聘页面，可以继续读取。');
     } catch (error) {
       if (['READ', 'LOCATE_JOB_PAGE', 'BATCH_START'].includes(type)) {
@@ -121,7 +131,7 @@ export default function BrowserCollector({ onSaved }: { onSaved: () => Promise<u
     }
   }
   useEffect(() => {
-    if (batch?.status !== 'running') return;
+    if (!['running', 'recovering'].includes(batch?.status)) return;
     let disposed = false,
       checking = false;
     const timer = setInterval(() => {
@@ -133,7 +143,7 @@ export default function BrowserCollector({ onSaved }: { onSaved: () => Promise<u
           if (!disposed) {
             setBatch(result);
             if (result.message) setMessage(result.message);
-            if (result.status !== 'running') void onSaved().catch(() => {});
+            if (!['running', 'recovering'].includes(result.status)) void onSaved().catch(() => {});
           }
         })
         .catch((error) => {
@@ -148,7 +158,7 @@ export default function BrowserCollector({ onSaved }: { onSaved: () => Promise<u
       clearInterval(timer);
     };
   }, [batch?.status]);
-  const running = batch?.status === 'running';
+  const running = ['running', 'recovering'].includes(batch?.status);
   const paused = batch?.status === 'paused';
   const batchPlatform =
     batch?.scope?.platform === 'boss'
@@ -224,7 +234,7 @@ export default function BrowserCollector({ onSaved }: { onSaved: () => Promise<u
             <li key={choice.tabId ?? choice.entryUrl}>
               <button
                 className="text-button"
-                disabled={busy}
+                disabled={busy || running || paused}
                 onClick={() => {
                   if (choice.tabId === undefined) {
                     setMessage('请在招聘网站中点击此职位入口，再重试。');
@@ -284,13 +294,28 @@ export default function BrowserCollector({ onSaved }: { onSaved: () => Promise<u
           />{' '}
           自动翻页或加载下一批（最多2页）
         </label>
+        <label>
+          <input
+            type="checkbox"
+            checked={autoRefresh}
+            disabled={busy || running || paused}
+            onChange={(e) => setAutoRefresh(e.target.checked)}
+          />{' '}
+          加载失败时自动刷新一次并恢复
+        </label>
+        <p className="helper">仅在原岗位和列表可重新核对时恢复；否则暂停。</p>
         <div className="action-row">
           {!running && !paused && (
             <button
               className="button primary"
               disabled={busy || !Number.isInteger(maxJobs) || maxJobs < 1 || maxJobs > 100}
               onClick={() =>
-                void run('BATCH_START', { maxJobs, maxPages: autoPage ? 2 : 1, autoPage })
+                void run('BATCH_START', {
+                  maxJobs,
+                  maxPages: autoPage ? 2 : 1,
+                  autoPage,
+                  autoRefresh,
+                })
               }
             >
               开始浏览器批量读取
@@ -335,6 +360,7 @@ export default function BrowserCollector({ onSaved }: { onSaved: () => Promise<u
             <strong>{batchPlatform} · 批量结果</strong>
             {' · '}
             已检查 {batch.visited ?? 0} 条 · 新增 {batch.saved ?? 0} 条 · 第 {batch.pages ?? 0} 页
+            {` · 已刷新 ${batch.refreshes ?? 0} 次`}
             {batch.pendingReview > 0 && ` · ${batch.pendingReview} 条变化待核对`}
             {batch.unconfirmed > 0 && ` · ${batch.unconfirmed} 条保存结果待核对`}
           </p>

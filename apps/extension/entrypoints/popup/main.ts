@@ -13,11 +13,12 @@ let noticeTimer: number | undefined;
 let currentActionId = '';
 let navigationOverride: { tabId?: number; entryUrl?: string } | undefined;
 type BatchStatus = {
-  status: 'idle' | 'running' | 'paused' | 'completed' | 'stopped' | 'error';
+  status: 'idle' | 'running' | 'recovering' | 'paused' | 'completed' | 'stopped' | 'error';
   saved: number;
   duplicates?: number;
   pendingReview?: number;
   unconfirmed?: number;
+  refreshes?: number;
   visited: number;
   pages: number;
   maxJobs: number;
@@ -81,7 +82,7 @@ function notice(text: string, error = false, temporary = false) {
     }, 4500);
 }
 function batchActive() {
-  return batch.status === 'running' || batch.status === 'paused';
+  return ['running', 'recovering', 'paused'].includes(batch.status);
 }
 function buttons() {
   const batchBusy = [...busy].some((key) => key.startsWith('batch-'));
@@ -94,7 +95,9 @@ function buttons() {
   element<HTMLButtonElement>('save').disabled = !connected || active || observations.length === 0;
   element<HTMLButtonElement>('batch-start').disabled = !connected || active;
   element('batch-start').hidden = batchActive();
-  element<HTMLButtonElement>('batch-pause').hidden = batch.status !== 'running';
+  element<HTMLButtonElement>('batch-pause').hidden = !['running', 'recovering'].includes(
+    batch.status,
+  );
   element<HTMLButtonElement>('batch-resume').hidden = batch.status !== 'paused';
   element<HTMLButtonElement>('batch-stop').hidden = !batchActive();
   element<HTMLButtonElement>('batch-pause').disabled = batchBusy;
@@ -102,8 +105,10 @@ function buttons() {
   element<HTMLButtonElement>('batch-stop').disabled = batchBusy;
   element<HTMLInputElement>('max-jobs').disabled = batchActive() || batchBusy;
   element<HTMLInputElement>('auto-page').disabled = batchActive() || batchBusy;
+  element<HTMLInputElement>('auto-refresh').disabled = batchActive() || batchBusy;
   element<HTMLInputElement>('max-pages').disabled =
     !element<HTMLInputElement>('auto-page').checked || batchActive() || batchBusy;
+  for (const choice of element('page-choices').querySelectorAll('button')) choice.disabled = active;
   element('connected').hidden = !connected && !batchActive();
 }
 function clearObservations() {
@@ -156,7 +161,11 @@ function connectionResult(result: {
 function batchResult(result: unknown) {
   if (!result || typeof result !== 'object') return;
   const candidate = result as BatchStatus;
-  if (!['idle', 'running', 'paused', 'completed', 'stopped', 'error'].includes(candidate.status))
+  if (
+    !['idle', 'running', 'recovering', 'paused', 'completed', 'stopped', 'error'].includes(
+      candidate.status,
+    )
+  )
     return;
   const previous = batch.status;
   batch = candidate;
@@ -164,6 +173,7 @@ function batchResult(result: unknown) {
   const labels: Record<BatchStatus['status'], string> = {
     idle: '未开始',
     running: '正在读取',
+    recovering: '正在刷新并恢复',
     paused: '已暂停',
     completed: '读取完成',
     stopped: '已停止',
@@ -189,6 +199,7 @@ function batchResult(result: unknown) {
   element('batch-visited').textContent = count(batch.visited);
   element('batch-pages').textContent = count(batch.pages);
   const outcomes = [
+    `已刷新 ${count(batch.refreshes ?? 0)} 次`,
     batch.pendingReview ? `更新待核对 ${count(batch.pendingReview)} 条` : '',
     batch.duplicates ? `重复跳过 ${count(batch.duplicates)} 条` : '',
     batch.unconfirmed ? `保存结果待核对 ${count(batch.unconfirmed)} 条` : '',
@@ -366,7 +377,13 @@ action('batch-start', async () => {
     throw new Error('翻页数量请填写 1 到 5 之间的整数');
   clearObservations();
   batchResult(
-    await send({ type: 'BATCH_START', maxJobs, maxPages: autoPage ? maxPages : 1, autoPage }),
+    await send({
+      type: 'BATCH_START',
+      maxJobs,
+      maxPages: autoPage ? maxPages : 1,
+      autoPage,
+      autoRefresh: element<HTMLInputElement>('auto-refresh').checked,
+    }),
   );
   await refresh(true);
 });
