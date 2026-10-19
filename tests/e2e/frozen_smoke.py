@@ -15,14 +15,15 @@ from docx import Document
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
-executable = Path(os.environ.get("EASYRESUME_TEST_EXE", "artifacts/windows/v0.2.0-beta.15/EasyResume/EasyResume.exe")).resolve()
+executable = Path(os.environ.get("EASYRESUME_TEST_EXE", "artifacts/windows/v0.2.0-beta.16/EasyResume/EasyResume.exe")).resolve()
 assert executable.is_file(), "Build the Windows test distribution first"
 with TemporaryDirectory(prefix="easyresume-frozen-") as directory:
     root = Path(directory)
     with socket.socket() as occupied, (root / "server.log").open("w", encoding="utf-8") as log:
         occupied.bind(("127.0.0.1", 8780))
         occupied.listen()
-        command = [str(executable), "--no-browser", "--data-dir", directory, "--port", "8780"]
+        command = [str(executable), "--no-browser", "--browser", "chrome", "--open-jobs",
+                   "--data-dir", directory, "--port", "8780"]
         # The packaged program and its parser must not discover developer Python/Node on PATH.
         runtime_env = os.environ.copy()
         windows = Path(os.environ.get("SystemRoot", "C:/Windows"))

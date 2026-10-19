@@ -3,11 +3,40 @@ import json
 import multiprocessing
 import os
 import socket
+import subprocess
 import sys
 import webbrowser
 from pathlib import Path
 
 from filelock import FileLock, Timeout
+
+JOB_PAGES = (
+    "https://www.zhipin.com/web/geek/jobs",
+    "https://www.zhaopin.com/recommend",
+)
+
+
+def open_browser(url: str, browser: str = "system", open_jobs: bool = False) -> bool:
+    urls = [url, *JOB_PAGES] if open_jobs else [url]
+    if browser == "system":
+        return all([webbrowser.open(page) for page in urls])
+    if browser != "chrome":
+        raise ValueError("不支持的浏览器")
+    locations = (
+        Path(os.environ.get("PROGRAMFILES", r"C:\Program Files")),
+        Path(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")),
+        Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")),
+    )
+    for root in locations:
+        executable = root / "Google" / "Chrome" / "Application" / "chrome.exe"
+        if executable.is_file():
+            try:
+                subprocess.Popen([str(executable), *urls], close_fds=True)
+                return True
+            except OSError:
+                break
+    print(f"未能打开正式 Chrome。工作台仍在运行，请在 Chrome 手动打开：{url}")
+    return False
 
 
 def default_data_dir() -> Path:
@@ -45,6 +74,8 @@ def main():
     )
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--browser", choices=("system", "chrome"), default="system")
+    parser.add_argument("--open-jobs", action="store_true", help="同时打开BOSS和智联职位入口")
     parser.add_argument("--dev", action="store_true", help="仅开发时允许本地Vite源")
     args = parser.parse_args()
     if not 1024 <= args.port <= 65505:
@@ -59,7 +90,7 @@ def main():
             info = json.loads(runtime.read_text("utf-8"))
             print(f"EasyResume 已在运行：{info['url']}")
             if not args.no_browser:
-                webbrowser.open(info["url"])
+                open_browser(info["url"], args.browser, args.open_jobs)
         else:
             print("EasyResume 正在启动，请稍后重试。")
         return
@@ -78,7 +109,7 @@ def main():
         if not args.no_browser:
             import threading
 
-            threading.Timer(1.5, lambda: webbrowser.open(url)).start()
+            threading.Timer(1.5, lambda: open_browser(url, args.browser, args.open_jobs)).start()
         uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning", access_log=False)
     finally:
         runtime.unlink(missing_ok=True)

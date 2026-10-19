@@ -1,4 +1,4 @@
-﻿param([ValidatePattern('^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$')][string]$Version = 'v0.2.0-beta.15')
+﻿param([ValidatePattern('^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$')][string]$Version = 'v0.2.0-beta.16')
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $source = Join-Path $projectRoot "artifacts/windows/$Version/EasyResume"
@@ -22,14 +22,15 @@ $launcher = @"
 chcp 65001 >nul
 echo EasyResume $Version
 echo 如果旧版仍在运行，请先关闭旧版服务窗口，再启动新版。
-start "" "%~dp0versions\$Version\EasyResume.exe"
+start "" "%~dp0versions\$Version\EasyResume.exe" --browser chrome
 "@
 [IO.File]::WriteAllText((Join-Path $localRoot '启动 EasyResume.cmd'), $launcher.Replace("`n","`r`n"), [Text.UTF8Encoding]::new($false))
+[IO.File]::WriteAllText((Join-Path $localRoot '启动 Chrome 求职工作区.cmd'), $launcher.Replace('--browser chrome', '--browser chrome --open-jobs').Replace("`n","`r`n"), [Text.UTF8Encoding]::new($false))
 $instructions = @"
 # EasyResume 本地测试包 $Version
 
 1. 关闭旧版 EasyResume 服务窗口（仅关闭浏览器标签页不会退出服务）。
-2. 双击本文件旁的“启动 EasyResume.cmd”。浏览器会打开工作台。
+2. 双击本文件旁的“启动 EasyResume.cmd”。工作台会明确使用正式Chrome打开，不改变系统默认浏览器。选择“启动 Chrome 求职工作区.cmd”会同时打开工作台、BOSS和智联职位入口；服务已运行时复用现有服务。每次点击都会打开这些页面，不是周期循环任务。没有安装Chrome时程序会说明手动打开的方法，不会静默改用其他浏览器。
 3. 扩展第一次改用本目录的 extension 文件夹：在 Chrome/Edge 扩展管理页移除旧目录的 EasyResume，再加载此文件夹。以后这里的扩展更新后点一次“重新加载”，并刷新已打开的工作台、BOSS 和智联页面即可。
 4. 保持工作台打开，扩展会自动连接；已配对会自动重连。没有连接时点击扩展的“查找并连接工作台”，仍失败可在设置里生成连接码备用。主动断开后不会自行重新配对。读取范围仍仅限BOSS和智联，没有增加站点权限。
 5. 工作台“设置与连接 → 浏览器扩展 → 从浏览器整理岗位”也可定位并读取；多个招聘标签页会提示选择。在 BOSS 或智联左侧选中岗位，等待右侧详情加载后点“读取当前职位”，展开职位内容检查正文。批量默认最多20条、当前已加载列表；工作台勾选自动翻页后最多2页，扩展可配置最多5页。支持已适配的下一页按钮及两站已验证结构的列表末尾加载，可暂停、继续或停止。公司等信息有变化的旧岗位进入“待核对”，不会直接覆盖。
