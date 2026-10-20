@@ -128,6 +128,24 @@ export default defineContentScript({
     const commands = new Map<string, { fingerprint: string; passive: boolean; result?: unknown }>();
     let inFlight = 0;
     let modifying = false;
+    const unavailable = () => ({
+      error: '扩展连接已失效，请刷新工作台；仍未恢复时再重新加载扩展',
+    });
+    const pendingCommands = new Set<(result: unknown) => void>();
+    const runtimeMessage = async (message: Record<string, unknown>) => {
+      if (!ctx.isValid) throw new Error(unavailable().error);
+      // Native sendMessage can throw before returning a promise after extension reload.
+      const result = await browser.runtime.sendMessage(message);
+      if (!ctx.isValid) throw new Error(unavailable().error);
+      return result;
+    };
+    ctx.onInvalidated(() => {
+      finished = false;
+      completeOffer?.(false);
+      requestId = '';
+      expires = 0;
+      for (const finish of pendingCommands) finish(unavailable());
+    });
 
     ctx.addEventListener(window, 'easyresume:browser-command', (event) => {
       if (!['/', '/index.html'].includes(location.pathname)) return;
@@ -138,6 +156,10 @@ export default defineContentScript({
         window.dispatchEvent(
           new CustomEvent('easyresume:browser-result', { detail: { request_id: id, result } }),
         );
+      if (!ctx.isValid) {
+        respond(unavailable());
+        return;
+      }
       let command: Record<string, unknown>;
       try {
         command = pageCommand(detail);
@@ -180,11 +202,12 @@ export default defineContentScript({
       const finish = (result: unknown) => {
         if (settled) return;
         settled = true;
+        pendingCommands.delete(finish);
         clearTimeout(timer);
         inFlight--;
         if (changesPage) modifying = false;
         try {
-          entry.result = publicResult(result);
+          entry.result = publicResult(ctx.isValid ? result : unavailable());
         } catch {
           entry.result = { error: '扩展返回内容无效，请检查任务状态' };
         }
@@ -194,14 +217,14 @@ export default defineContentScript({
         () => finish({ error: '扩展尚未返回结果，请先检查任务状态再继续' }),
         20000,
       );
-      void browser.runtime
-        .sendMessage({ type: 'WORKBENCH_BRIDGE_COMMAND', command })
+      pendingCommands.add(finish);
+      void runtimeMessage({ type: 'WORKBENCH_BRIDGE_COMMAND', command })
         .then(finish)
-        .catch(() => finish({ error: '扩展连接不可用，请重新加载扩展并刷新工作台' }));
+        .catch(() => finish(unavailable()));
     });
 
     const requestOffer = () => {
-      if (requestId && expires > Date.now())
+      if (ctx.isValid && requestId && expires > Date.now())
         window.dispatchEvent(
           new CustomEvent('easyresume:extension-request', {
             detail: { request_id: requestId },
@@ -209,8 +232,10 @@ export default defineContentScript({
         );
     };
     const tryConnect = async (allowHidden = false): Promise<boolean> => {
+      if (!ctx.isValid) return false;
       if (pending) {
         const connected = await pending;
+        if (!ctx.isValid) return false;
         return connected || !allowHidden ? connected : tryConnect(true);
       }
       if (finished) return true;
@@ -222,10 +247,11 @@ export default defineContentScript({
           cache: 'no-store',
           signal: AbortSignal.timeout(2000),
         });
-        if (!response.ok) return false;
+        if (!ctx.isValid || !response.ok) return false;
         const health = await response.json();
-        if (health.name !== 'EasyResume' || health.protocol !== 1) return false;
-        const status = await browser.runtime.sendMessage({ type: 'WORKBENCH_BRIDGE_STATUS', base });
+        if (!ctx.isValid || health.name !== 'EasyResume' || health.protocol !== 1) return false;
+        const status = await runtimeMessage({ type: 'WORKBENCH_BRIDGE_STATUS', base });
+        if (!ctx.isValid) return false;
         if (status?.connected) {
           finished = true;
           return true;
@@ -257,6 +283,7 @@ export default defineContentScript({
     };
 
     ctx.addEventListener(window, 'easyresume:extension-offer', (event) => {
+      if (!ctx.isValid) return;
       const detail = (event as CustomEvent).detail;
       if (finished || !requestId || expires <= Date.now() || detail?.request_id !== requestId)
         return;
@@ -271,9 +298,12 @@ export default defineContentScript({
       }
       requestId = '';
       const complete = completeOffer;
-      void browser.runtime
-        .sendMessage({ type: 'WORKBENCH_BRIDGE_PAIR', info: input })
+      void runtimeMessage({ type: 'WORKBENCH_BRIDGE_PAIR', info: input })
         .then((result) => {
+          if (!ctx.isValid) {
+            complete?.(false);
+            return;
+          }
           if (result?.connected) {
             finished = true;
             window.dispatchEvent(new CustomEvent('easyresume:extension-connected'));
@@ -284,6 +314,7 @@ export default defineContentScript({
     });
     browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (
+        !ctx.isValid ||
         message?.type !== 'WORKBENCH_RECONNECT' ||
         sender.id !== browser.runtime.id ||
         !sender.url?.startsWith(`chrome-extension://${browser.runtime.id}/`)
@@ -292,7 +323,13 @@ export default defineContentScript({
       finished = false;
       // This message follows the user's Connect action; it may reach an inactive workbench tab.
       // Wait for the actual pairing, not only the page event that starts it.
-      void tryConnect(true).then((connected) => sendResponse({ connected }));
+      void tryConnect(true).then((connected) => {
+        try {
+          sendResponse({ connected: ctx.isValid && connected });
+        } catch {
+          // Reloading may close this response channel; never restart the pairing.
+        }
+      });
       return true;
     });
     ctx.addEventListener(window, 'easyresume:workbench-ready', () => {

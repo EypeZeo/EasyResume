@@ -199,7 +199,7 @@ function batchResult(result: unknown) {
   element('batch-visited').textContent = count(batch.visited);
   element('batch-pages').textContent = count(batch.pages);
   const outcomes = [
-    `已刷新 ${count(batch.refreshes ?? 0)} 次`,
+    `已尝试刷新 ${count(batch.refreshes ?? 0)} 次`,
     batch.pendingReview ? `更新待核对 ${count(batch.pendingReview)} 条` : '',
     batch.duplicates ? `重复跳过 ${count(batch.duplicates)} 条` : '',
     batch.unconfirmed ? `保存结果待核对 ${count(batch.unconfirmed)} 条` : '',

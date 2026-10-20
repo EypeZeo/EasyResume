@@ -269,7 +269,7 @@ describe('bounded batch reading controls', () => {
     });
     await load();
     expect(document.getElementById('batch-state')?.textContent).toBe('正在刷新并恢复');
-    expect(document.getElementById('batch-message')?.textContent).toContain('已刷新 1 次');
+    expect(document.getElementById('batch-message')?.textContent).toContain('已尝试刷新 1 次');
     for (const id of [
       'read',
       'read-selection',

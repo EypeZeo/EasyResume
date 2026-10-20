@@ -17,6 +17,18 @@ vi.mock('wxt/browser', () => ({
 
 const base = 'http://127.0.0.1:8765';
 let listeners: Array<[EventTarget, string, EventListener]> = [];
+let contextValid = true;
+let invalidationListeners: Array<() => void> = [];
+const invalidate = () => {
+  contextValid = false;
+  for (const listener of invalidationListeners) listener();
+};
+const runtimeErrors = () => {
+  const listener = vi.fn((event: Event) => event.preventDefault());
+  window.addEventListener('error', listener);
+  listeners.push([window, 'error', listener]);
+  return listener;
+};
 const settle = async () => {
   for (let index = 0; index < 20; index++) await Promise.resolve();
 };
@@ -37,6 +49,12 @@ const offer = (request_id: string, changes = {}) =>
 async function load() {
   const module = await import('../entrypoints/workbench-bridge.content');
   module.default.main({
+    get isValid() {
+      return contextValid;
+    },
+    onInvalidated(callback: () => void) {
+      invalidationListeners.push(callback);
+    },
     addEventListener(target: EventTarget, type: string, callback: EventListener) {
       target.addEventListener(type, callback);
       listeners.push([target, type, callback]);
@@ -49,6 +67,8 @@ async function load() {
 beforeEach(() => {
   vi.resetModules();
   vi.useFakeTimers();
+  contextValid = true;
+  invalidationListeners = [];
   vi.stubGlobal('location', new URL(base));
   vi.stubGlobal('defineContentScript', (config: unknown) => config);
   vi.stubGlobal(
@@ -76,6 +96,86 @@ afterEach(() => {
 });
 
 describe('workbench page bridge boundary', () => {
+  it('settles a synchronous pairing failure without an uncaught page error', async () => {
+    const request = vi.fn();
+    window.addEventListener('easyresume:extension-request', request);
+    listeners.push([window, 'easyresume:extension-request', request]);
+    await load();
+    const id = (request.mock.calls[0][0] as CustomEvent).detail.request_id;
+    const errors = runtimeErrors();
+    sendMessage.mockImplementation((message) => {
+      if (message.type === 'WORKBENCH_BRIDGE_PAIR')
+        throw new Error('Extension context invalidated');
+      return Promise.resolve({ needs_pairing: true });
+    });
+    window.dispatchEvent(offer(id));
+    await settle();
+    expect(errors).not.toHaveBeenCalled();
+    window.dispatchEvent(new CustomEvent('easyresume:workbench-ready'));
+    await settle();
+    expect(
+      sendMessage.mock.calls.filter(([message]) => message.type === 'WORKBENCH_BRIDGE_STATUS'),
+    ).toHaveLength(2);
+    expect(
+      sendMessage.mock.calls.filter(([message]) => message.type === 'WORKBENCH_BRIDGE_PAIR'),
+    ).toHaveLength(1);
+  });
+
+  it('does not pair or reannounce an offer after its content context is invalidated', async () => {
+    const request = vi.fn();
+    window.addEventListener('easyresume:extension-request', request);
+    listeners.push([window, 'easyresume:extension-request', request]);
+    await load();
+    const id = (request.mock.calls[0][0] as CustomEvent).detail.request_id;
+    invalidate();
+    window.dispatchEvent(new CustomEvent('easyresume:workbench-ready'));
+    window.dispatchEvent(offer(id));
+    await settle();
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(
+      sendMessage.mock.calls.filter(([message]) => message.type === 'WORKBENCH_BRIDGE_PAIR'),
+    ).toHaveLength(0);
+  });
+
+  it('does not announce a late successful pair after invalidation', async () => {
+    const request = vi.fn();
+    const connected = vi.fn();
+    window.addEventListener('easyresume:extension-request', request);
+    window.addEventListener('easyresume:extension-connected', connected);
+    listeners.push(
+      [window, 'easyresume:extension-request', request],
+      [window, 'easyresume:extension-connected', connected],
+    );
+    await load();
+    let finish!: (value: unknown) => void;
+    sendMessage.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    window.dispatchEvent(offer(request.mock.calls[0][0].detail.request_id));
+    invalidate();
+    finish({ connected: true });
+    await settle();
+    expect(connected).not.toHaveBeenCalled();
+  });
+
+  it('does not contact the extension after invalidation during the local health request', async () => {
+    let finish!: (value: Response) => void;
+    vi.mocked(fetch).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    await load();
+    invalidate();
+    finish(new Response(JSON.stringify({ name: 'EasyResume', protocol: 1 })));
+    await settle();
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
   it('only transfers a matching short-lived same-origin offer', async () => {
     const request = vi.fn();
     window.addEventListener('easyresume:extension-request', request, { once: true });
@@ -236,6 +336,55 @@ describe('paired workbench read-only command transport', () => {
     recruitment_type: 'unknown',
     blocked: false,
   };
+
+  it('returns a normal error for a synchronous runtime failure', async () => {
+    await load();
+    const result = results();
+    const errors = runtimeErrors();
+    sendMessage.mockImplementation(() => {
+      throw new Error('Extension context invalidated');
+    });
+    const id = issue('STATUS');
+    await settle();
+    expect(errors).not.toHaveBeenCalled();
+    expect(result).toHaveBeenCalledTimes(1);
+    expect(result.mock.calls[0][0].detail).toEqual({
+      request_id: id,
+      result: { error: '扩展连接已失效，请刷新工作台；仍未恢复时再重新加载扩展' },
+    });
+  });
+
+  it('rejects commands without invoking an invalid extension context', async () => {
+    await load();
+    const result = results();
+    invalidate();
+    issue('BATCH_START');
+    await settle();
+    expect(forwarded()).toHaveLength(0);
+    expect(result.mock.calls[0][0].detail.result.error).toContain('扩展连接已失效');
+  });
+
+  it('settles pending commands on invalidation and ignores their late success', async () => {
+    await load();
+    const result = results();
+    let finish!: (value: unknown) => void;
+    sendMessage.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    issue('READ');
+    invalidate();
+    await settle();
+    expect(result).toHaveBeenCalledTimes(1);
+    expect(result.mock.calls[0][0].detail.result.error).toContain('扩展连接已失效');
+    finish({ observations: [observation] });
+    await settle();
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(result).toHaveBeenCalledTimes(1);
+    expect(forwarded()).toHaveLength(1);
+  });
 
   it('forwards bounded refresh opt-in independently from page loading and defaults it off', async () => {
     await load();

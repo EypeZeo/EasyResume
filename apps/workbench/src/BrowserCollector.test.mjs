@@ -65,7 +65,7 @@ it('polls recovery until completion while blocking other operations and retainin
   vi.useFakeTimers();
   respond = () => ({ status: 'recovering', refreshes: 1, message: '正在刷新并恢复' });
   await click('检查批量任务');
-  expect(host.textContent).toContain('已刷新 1 次');
+  expect(host.textContent).toContain('已尝试刷新 1 次');
   expect(host.querySelector('select').disabled).toBe(true);
   for (const input of host.querySelectorAll('input')) expect(input.disabled).toBe(true);
   for (const label of ['读取浏览器当前职位', '定位招聘页面'])

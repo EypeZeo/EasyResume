@@ -630,7 +630,7 @@ export default defineBackground(() => {
       task = {
         ...task,
         taskId: newTaskId,
-        message: '网页已刷新，正在等待网站加载，最长45秒',
+        message: '已请求刷新网页，正在等待网站加载，最长45秒',
       };
       await persist();
       const deadline = Date.now() + 45000;

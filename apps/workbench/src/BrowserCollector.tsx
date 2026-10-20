@@ -363,7 +363,7 @@ export default function BrowserCollector({ onSaved }: { onSaved: () => Promise<u
             <strong>{batchPlatform} · 批量结果</strong>
             {' · '}
             已检查 {batch.visited ?? 0} 条 · 新增 {batch.saved ?? 0} 条 · 第 {batch.pages ?? 0} 页
-            {` · 已刷新 ${batch.refreshes ?? 0} 次`}
+            {` · 已尝试刷新 ${batch.refreshes ?? 0} 次`}
             {batch.pendingReview > 0 && ` · ${batch.pendingReview} 条变化待核对`}
             {batch.unconfirmed > 0 && ` · ${batch.unconfirmed} 条保存结果待核对`}
           </p>
