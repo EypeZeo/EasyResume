@@ -123,7 +123,9 @@
           <label class="check-row"
             ><input id="auto-refresh" type="checkbox" />加载失败时自动刷新一次并恢复</label
           >
-          <p class="muted">仅在原岗位和列表可重新核对时恢复；否则暂停。</p>
+          <p class="muted">
+            缺少职位编号时从首条重新核对，相同记录去重；重复核对也计入本次上限。每任务最多刷新一次，验证码或返回首页仍会暂停。
+          </p>
           <p id="batch-scope" class="muted scope-hint">仅处理当前页，不自动翻页。</p>
           <button id="batch-start" class="primary">开始批量读取</button>
           <div id="batch-progress" class="batch-progress" hidden>

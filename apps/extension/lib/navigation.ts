@@ -14,6 +14,7 @@ export type RecruitingPageStatus = {
   listCount: number;
   documentId?: string;
   safeForRefresh?: boolean;
+  code?: string;
   message?: string;
   diagnostics?: unknown;
 };

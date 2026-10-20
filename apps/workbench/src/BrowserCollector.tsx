@@ -303,7 +303,10 @@ export default function BrowserCollector({ onSaved }: { onSaved: () => Promise<u
           />
           加载失败时自动刷新一次并恢复
         </label>
-        <p className="helper">仅在原岗位和列表可重新核对时恢复；否则暂停。</p>
+        <p className="helper">
+          缺少职位编号时从首条重新核对，相同记录去重；重复核对也计入本次上限。
+          每任务最多刷新一次，验证码或返回首页仍会暂停。
+        </p>
         <div className="action-row">
           {!running && !paused && (
             <button

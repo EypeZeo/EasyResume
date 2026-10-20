@@ -65,6 +65,19 @@ describe('known Zhilian onboarding acknowledgement', () => {
     expect(() => guard.assertClear()).not.toThrow();
   });
 
+  it.each([
+    'https://zhaopin.com/jobs/?pageMode=search&kw=Linux',
+    'https://zhaopin.com/recommend/',
+  ])('handles the same known guide on the already supported bare hostname: %s', async (url) => {
+    const page = fixture();
+    const click = vi.fn(page.remove);
+    page.button.addEventListener('click', click);
+    const guard = createOnboardingGuard(document, url);
+    await guard.clear(() => undefined);
+    expect(click).toHaveBeenCalledTimes(1);
+    expect(() => guard.assertClear()).not.toThrow();
+  });
+
   it('waits for delayed guide and mask removal', async () => {
     const page = fixture();
     const click = vi.fn(() => setTimeout(page.remove, 150));
@@ -192,6 +205,11 @@ describe('conservative blocking', () => {
     'https://jobs.zhaopin.com/example.htm',
     'https://user@www.zhaopin.com/jobs/',
     'https://www.zhaopin.com:8443/jobs/',
+    'https://zhaopin.com/',
+    'http://zhaopin.com/jobs/',
+    'https://zhaopin.com.evil.example/jobs/',
+    'https://zhaopin.com/jobs-invalid/',
+    'https://zhaopin.com:8443/jobs/',
   ])('does not acknowledge on unsupported URLs: %s', async (url) => {
     const page = fixture();
     const click = vi.fn();

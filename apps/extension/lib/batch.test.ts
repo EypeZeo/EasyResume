@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   BatchLoadTimeout,
+  BatchNetworkError,
   createBatchReader,
   type BatchAdapter,
   type BatchSnapshot,
@@ -252,6 +253,129 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe('bounded readonly batch steps on synthetic DOM', () => {
+  it('reports the observed Zhilian empty-list network error before claiming the page has no list', () => {
+    const test = scrollingFixture();
+    test.panel.remove();
+    document.body.insertAdjacentHTML(
+      'beforeend',
+      '<div class="jobs-split-page__content"><div class="job-list-empty"><p class="job-list-empty__title">网络开小差啦，请刷新重试</p><button>重试</button></div></div>',
+    );
+    const retry = vi.fn();
+    document.querySelector('.job-list-empty button')!.addEventListener('click', retry);
+    expect(() => test.reader.prepare('network_failed')).toThrow('网站职位列表加载失败');
+    expect(retry).not.toHaveBeenCalled();
+    expect(test.clicks()).toBe(0);
+  });
+
+  it('pauses before returning an otherwise complete detail when the list reports a network failure', async () => {
+    const test = scrollingFixture();
+    const snapshot = test.reader.prepare('network_during_read');
+    const pending = test.reader.step(job(snapshot)).then(
+      (result) => result,
+      (error: unknown) => error,
+    );
+    await vi.advanceTimersByTimeAsync(1000);
+    test.panel.insertAdjacentHTML(
+      'beforeend',
+      '<div class="job-list-panel__status job-list-panel__status--more">网络错误，请重试</div>',
+    );
+    await vi.advanceTimersByTimeAsync(2400);
+    const result = await pending;
+    expect(result).toBeInstanceOf(Error);
+    expect(result).toBeInstanceOf(BatchNetworkError);
+    expect((result as Error).message).toContain('网站职位列表加载失败');
+    expect(result).not.toBeInstanceOf(BatchLoadTimeout);
+    await expect(test.reader.step(job(snapshot, 'b'))).rejects.toThrow('网站职位列表加载失败');
+    expect(test.clicks()).toBe(1);
+  });
+
+  it('does not mistake hidden errors, job text or unrelated empty-state messages for list failure', async () => {
+    const test = scrollingFixture();
+    document.body.insertAdjacentHTML(
+      'beforeend',
+      '<div class="jobs-split-page__content"><div class="job-list-empty" hidden><p class="job-list-empty__title">网络开小差啦，请刷新重试</p></div></div><div class="job-list-empty"><p class="job-list-empty__title">网络开小差啦，请刷新重试</p></div>',
+    );
+    test.panel
+      .querySelector('.card')!
+      .insertAdjacentHTML(
+        'beforeend',
+        '<div class="job-list-panel__status">网络错误，请重试</div>',
+      );
+    const snapshot = test.reader.prepare('normal_read');
+    const pending = test.reader.step(job(snapshot));
+    await vi.advanceTimersByTimeAsync(3200);
+    expect((await pending).observation?.platform_job_id).toBe('a');
+  });
+
+  it('does not reselect an empty detail or request refresh after a visible website list failure', async () => {
+    const test = emptyZhilianFixture();
+    const snapshot = test.reader.prepare('empty_then_network_failure');
+    const pending = test.reader.step(job(snapshot)).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(1000);
+    document.body.insertAdjacentHTML(
+      'beforeend',
+      '<div class="jobs-split-page__content"><div class="job-list-empty"><p class="job-list-empty__title">网络开小差啦，请刷新重试</p><button>重试</button></div></div>',
+    );
+    const retry = vi.fn();
+    document.querySelector('.job-list-empty button')!.addEventListener('click', retry);
+    await vi.advanceTimersByTimeAsync(6000);
+    const result = await pending;
+    expect(result).toBeInstanceOf(Error);
+    expect(result).toBeInstanceOf(BatchNetworkError);
+    expect((result as Error).message).toContain('网站职位列表加载失败');
+    expect(result).not.toBeInstanceOf(BatchLoadTimeout);
+    expect(test.clickCount()).toBe(1);
+    expect(retry).not.toHaveBeenCalled();
+  });
+
+  it('uses the existing Zhilian five-second spacing and empty-detail recovery on its bare domain', async () => {
+    const test = emptyZhilianFixture();
+    href = 'https://zhaopin.com/jobs/';
+    test.onClick((key, count) => {
+      if (count === 2) test.complete(key);
+    });
+    const started = Date.now();
+    const snapshot = test.reader.prepare('bare_domain');
+    const pending = test.reader.step(job(snapshot));
+    await vi.advanceTimersByTimeAsync(8200);
+    expect((await pending).observation?.platform_job_id).toBe('a');
+    expect(test.clickTimes).toEqual([started, started + 5000]);
+  });
+
+  it('loads the existing Zhilian list on the bare domain without accepting unknown subdomains', async () => {
+    const test = scrollingFixture();
+    href = 'https://zhaopin.com/jobs/';
+    test.scroll.mockImplementation(() => {
+      const next = test.panel.lastElementChild!.cloneNode(true) as HTMLElement;
+      next.dataset.key = 'c';
+      test.panel.append(next);
+    });
+    const snapshot = test.reader.prepare('bare_scroll', { allowNextPage: true });
+    const pending = test.reader.step({ ...snapshot, kind: 'next_page' });
+    await vi.advanceTimersByTimeAsync(3200);
+    expect((await pending).targets).toHaveLength(3);
+    expect(test.scroll).toHaveBeenCalledOnce();
+    href = 'https://unlisted.zhaopin.com/jobs/';
+    expect(() => test.reader.prepare('unknown_subdomain')).toThrow('已离开支持的职位页面');
+  });
+
+  it('retains same-name salary identity checks on the bare Zhilian domain', async () => {
+    const test = salaryIdentityFixture();
+    href = 'https://zhaopin.com/jobs/';
+    const snapshot = test.reader.prepare('bare_salary');
+    const pending = test.reader.step(job(snapshot, snapshot.targets[0].key));
+    await vi.advanceTimersByTimeAsync(3200);
+    expect((await pending).observation?.platform_job_id).toBe('RIGHT_A');
+    test.cards[0].classList.remove('job-card--active');
+    test.cards[1].classList.add('job-card--active');
+    const next = test.reader.prepare('bare_salary_wrong_card');
+    const rejection = expect(test.reader.step(job(next, next.targets[1].key))).rejects.toThrow(
+      '同名同公司职位身份待核对',
+    );
+    await vi.advanceTimersByTimeAsync(15000);
+    await rejection;
+  });
+
   it('never completes a late same-title detail by borrowing the newly selected company', async () => {
     href = 'https://www.zhaopin.com/jobs/';
     document.title = '合成智联职位';
@@ -387,8 +511,15 @@ describe('bounded readonly batch steps on synthetic DOM', () => {
     modal.textContent = '其他操作确认';
     document.body.append(modal);
     vi.spyOn(modal, 'getBoundingClientRect').mockReturnValue({
-      left: 0, top: 0, right: 400, bottom: 200, width: 400, height: 200,
-      x: 0, y: 0, toJSON: () => ({}),
+      left: 0,
+      top: 0,
+      right: 400,
+      bottom: 200,
+      width: 400,
+      height: 200,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
     });
     expect(() => test.reader.prepare('obstructed')).toThrow('遮罩');
     await expect(test.reader.clearOnboarding()).rejects.toThrow('遮罩');
@@ -749,10 +880,12 @@ describe('bounded readonly batch steps on synthetic DOM', () => {
     );
     const snapshot = test.reader.prepare('scroll', { allowNextPage: true });
     const rejection = expect(test.reader.step({ ...snapshot, kind: 'next_page' })).rejects.toThrow(
-      '新增职位超时',
+      '网站职位列表加载失败',
     );
-    await vi.advanceTimersByTimeAsync(15200);
+    await vi.advanceTimersByTimeAsync(800);
     await rejection;
+    expect(test.scroll).toHaveBeenCalledOnce();
+    expect(test.clicks()).toBe(0);
   });
 
   it('does not treat a replaced list as a successful appended page', async () => {

@@ -58,9 +58,15 @@ const POLL_MS = 200;
 const DANGEROUS_ACTION =
   /^(立即沟通|立即投递|投递简历|申请职位|发送|发送简历|收藏|取消收藏|打招呼|申请|沟通|登录|注册)$/;
 const normalize = (value: string) => value.replace(/[\s\u200b-\u200d\ufeff]+/g, '').trim();
+const isZhilianHost = (hostname: string) =>
+  ['zhaopin.com', 'www.zhaopin.com', 'sou.zhaopin.com', 'jobs.zhaopin.com'].includes(hostname);
 
 export class BatchLoadTimeout extends Error {
   readonly code = 'DETAIL_LOAD_TIMEOUT';
+}
+
+export class BatchNetworkError extends Error {
+  readonly code = 'PAGE_NETWORK_ERROR';
 }
 
 function visible(element: Element): boolean {
@@ -219,9 +225,7 @@ export function createBatchReader(document: Document, href: () => string, adapte
   const idleWaiters = new Set<() => void>();
   let lastClick = -Infinity;
   const actionInterval = () =>
-    ['www.zhaopin.com', 'sou.zhaopin.com', 'jobs.zhaopin.com'].includes(new URL(href()).hostname)
-      ? ZHILIAN_INTERVAL_MS
-      : INTERVAL_MS;
+    isZhilianHost(new URL(href()).hostname) ? ZHILIAN_INTERVAL_MS : INTERVAL_MS;
 
   const cancel = (reason = '已暂停批量读取') => {
     if (!session) return;
@@ -250,9 +254,7 @@ export function createBatchReader(document: Document, href: () => string, adapte
     const url = new URL(href());
     const expected = new URL(expectedHref);
     const boss = ['www.zhipin.com', 'zhipin.com'].includes(url.hostname);
-    const zhilian = ['www.zhaopin.com', 'sou.zhaopin.com', 'jobs.zhaopin.com'].includes(
-      url.hostname,
-    );
+    const zhilian = isZhilianHost(url.hostname);
     if (
       url.protocol !== 'https:' ||
       (!boss && !zhilian) ||
@@ -282,6 +284,23 @@ export function createBatchReader(document: Document, href: () => string, adapte
     );
     if (challenge || /安全验证|访问异常|账号异常/.test(document.title))
       throw new Error('检测到验证或异常，批量读取已暂停；请处理后重新开始');
+    if (
+      zhilian &&
+      Array.from(
+        document.querySelectorAll(
+          '.jobs-split-page__content > .job-list-empty > .job-list-empty__title, .job-split-layout__left .job-list-panel > .job-list-panel__status',
+        ),
+      ).some(
+        (element) =>
+          visible(element) &&
+          /^(?:网络开小差啦[，,]?请刷新重试|网络错误[，,]?请重试)$/.test(
+            normalize(visibleText(element)),
+          ),
+      )
+    )
+      throw new BatchNetworkError(
+        '网站职位列表加载失败，批量读取已暂停；已保存的岗位保留，请等待网站恢复后重试',
+      );
   }
 
   function targets(): BatchTarget[] {
@@ -453,7 +472,7 @@ export function createBatchReader(document: Document, href: () => string, adapte
         )
         .at(-1) === element;
     const zhilianAllowed =
-      ['www.zhaopin.com', 'sou.zhaopin.com', 'jobs.zhaopin.com'].includes(url.hostname) &&
+      isZhilianHost(url.hostname) &&
       element.matches('.job-card') &&
       !!element.closest('.job-split-layout__left .job-list-panel');
     if (
@@ -474,9 +493,7 @@ export function createBatchReader(document: Document, href: () => string, adapte
     observationId: string,
   ) {
     if (
-      !['www.zhaopin.com', 'sou.zhaopin.com', 'jobs.zhaopin.com'].includes(
-        new URL(href()).hostname,
-      ) ||
+      !isZhilianHost(new URL(href()).hostname) ||
       !observationId ||
       target.platform_job_id ||
       stableId(target.key)
@@ -564,13 +581,7 @@ export function createBatchReader(document: Document, href: () => string, adapte
   }
 
   function salaryGroup(target: BatchTarget) {
-    if (
-      !['www.zhaopin.com', 'sou.zhaopin.com', 'jobs.zhaopin.com'].includes(
-        new URL(href()).hostname,
-      ) ||
-      target.platform_job_id ||
-      stableId(target.key)
-    )
+    if (!isZhilianHost(new URL(href()).hostname) || target.platform_job_id || stableId(target.key))
       return;
     const panels = Array.from(
       document.querySelectorAll('.job-split-layout__left .job-list-panel'),
@@ -685,9 +696,7 @@ export function createBatchReader(document: Document, href: () => string, adapte
       if (targetId !== observationId) return;
     } else {
       if (!target.company || !observation.company) return;
-      const peers = ['www.zhaopin.com', 'sou.zhaopin.com', 'jobs.zhaopin.com'].includes(
-        new URL(href()).hostname,
-      )
+      const peers = isZhilianHost(new URL(href()).hostname)
         ? adapter
             .listTargets(document, href())
             .filter((item) => item.element.isConnected && visible(item.element))
@@ -714,10 +723,7 @@ export function createBatchReader(document: Document, href: () => string, adapte
   }
 
   function emptySelectedZhilianDetail(target: BatchTarget, values: BatchTarget[]): boolean {
-    if (
-      !['www.zhaopin.com', 'sou.zhaopin.com', 'jobs.zhaopin.com'].includes(new URL(href()).hostname)
-    )
-      return false;
+    if (!isZhilianHost(new URL(href()).hostname)) return false;
     const panels = Array.from(
       document.querySelectorAll('.job-split-layout__left .job-list-panel'),
     ).filter(visible);
@@ -991,6 +997,7 @@ export function createBatchReader(document: Document, href: () => string, adapte
       onboarding.assertClear();
     },
     checkPage() {
+      onboarding.assertClear();
       pageSafety(href());
     },
     whenIdle(): Promise<void> {

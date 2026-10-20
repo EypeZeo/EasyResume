@@ -9,7 +9,12 @@ import {
   visible,
   diagnosePage,
 } from '../lib/observe';
-import { BatchLoadTimeout, createBatchReader, type BatchStep } from '../lib/batch';
+import {
+  BatchLoadTimeout,
+  BatchNetworkError,
+  createBatchReader,
+  type BatchStep,
+} from '../lib/batch';
 import {
   classifyRecruitingPage,
   observedRecruitingEntrypoints,
@@ -65,6 +70,11 @@ export default defineContentScript({
               result.diagnostics = diagnosePage(document, location.href);
           } catch (error) {
             result.message = error instanceof Error ? error.message : '职位详情尚未就绪';
+            if (error instanceof BatchNetworkError) {
+              result.code = error.code;
+              // checkPage rejects foreground, verification and overlay problems first.
+              result.safeForRefresh = page.kind === 'list';
+            }
             result.diagnostics = diagnosePage(document, location.href);
           }
         }
@@ -78,7 +88,9 @@ export default defineContentScript({
           .catch((error) =>
             sendResponse({
               error: error instanceof Error ? error.message : '读取失败，已暂停',
-              ...(error instanceof BatchLoadTimeout ? { code: error.code } : {}),
+              ...(error instanceof BatchLoadTimeout || error instanceof BatchNetworkError
+                ? { code: error.code }
+                : {}),
             }),
           );
         return true;
@@ -100,7 +112,10 @@ export default defineContentScript({
           .clearOnboarding()
           .then(() => sendResponse(batch.prepare(message.taskId, message.options)))
           .catch((error) =>
-            sendResponse({ error: error instanceof Error ? error.message : '无法开始批量读取' }),
+            sendResponse({
+              error: error instanceof Error ? error.message : '无法开始批量读取',
+              ...(error instanceof BatchNetworkError ? { code: error.code } : {}),
+            }),
           );
         return true;
       }

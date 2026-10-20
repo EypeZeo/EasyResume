@@ -139,7 +139,7 @@ function supported(href: string): boolean {
     const url = new URL(href);
     return (
       url.protocol === 'https:' &&
-      url.hostname === 'www.zhaopin.com' &&
+      ['www.zhaopin.com', 'zhaopin.com'].includes(url.hostname) &&
       !url.port &&
       !url.username &&
       !url.password &&

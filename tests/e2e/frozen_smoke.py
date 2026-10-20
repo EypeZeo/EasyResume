@@ -6,6 +6,7 @@ import os
 import socket
 import subprocess
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -15,9 +16,30 @@ from docx import Document
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
-executable = Path(os.environ.get("EASYRESUME_TEST_EXE", "artifacts/windows/v0.2.0-beta.21/EasyResume/EasyResume.exe")).resolve()
+
+@contextmanager
+def test_workspace():
+    temporary = TemporaryDirectory(prefix="easyresume-frozen-")
+    target = Path(temporary.name).resolve()
+    try:
+        yield temporary.name
+    finally:
+        # Windows may briefly report a nonempty directory after its last file is
+        # removed. Retry only this owned directory, and never suppress failure.
+        assert Path(temporary.name).resolve() == target
+        for attempt in range(6):
+            try:
+                temporary.cleanup()
+                break
+            except OSError as error:
+                if error.winerror not in (32, 145) or attempt == 5:
+                    raise
+                time.sleep(0.2 * (attempt + 1))
+
+
+executable = Path(os.environ.get("EASYRESUME_TEST_EXE", "artifacts/windows/v0.2.0-beta.23/EasyResume/EasyResume.exe")).resolve()
 assert executable.is_file(), "Build the Windows test distribution first"
-with TemporaryDirectory(prefix="easyresume-frozen-") as directory:
+with test_workspace() as directory:
     root = Path(directory)
     with socket.socket() as occupied, (root / "server.log").open("w", encoding="utf-8") as log:
         occupied.bind(("127.0.0.1", 8780))
@@ -90,26 +112,22 @@ with TemporaryDirectory(prefix="easyresume-frozen-") as directory:
             assert result.status_code == 200, result.text
             assert result.json()['profile']['text'].count('Synthetic College') == 1
             assert not httpx.get(base + "/api/v1/health").json()["verified_actions"]
-            print(
-                json.dumps(
-                    {
-                        "result": "PASS",
-                        "executable": "EasyResume.exe",
-                        "checks": [
-                            "startup",
-                            "bundled frontend",
-                            "occupied port",
-                            "single instance",
-                            "empty user workspace",
-                            "DOCX spawned parser",
-                            "PDF duplicate text layer in spawned parser",
-                            "runtime PATH without Python or Node",
-                            "sending disabled",
-                        ],
-                        "clean_windows_verified": False,
-                    }
-                )
-            )
+            report = {
+                "result": "PASS",
+                "executable": "EasyResume.exe",
+                "checks": [
+                    "startup",
+                    "bundled frontend",
+                    "occupied port",
+                    "single instance",
+                    "empty user workspace",
+                    "DOCX spawned parser",
+                    "PDF duplicate text layer in spawned parser",
+                    "runtime PATH without Python or Node",
+                    "sending disabled",
+                ],
+                "clean_windows_verified": False,
+            }
         finally:
             if process.poll() is None:
                 children = psutil.Process(process.pid).children(recursive=True)
@@ -117,4 +135,13 @@ with TemporaryDirectory(prefix="easyresume-frozen-") as directory:
                     child.terminate()
                 process.terminate()
                 process.wait(timeout=10)
-                psutil.wait_procs(children, timeout=5)
+                _, alive = psutil.wait_procs(children, timeout=5)
+                for child in alive:
+                    try:
+                        child.kill()
+                    except psutil.NoSuchProcess:
+                        pass
+                _, alive = psutil.wait_procs(alive, timeout=5)
+                assert not alive, "Packaged child processes did not exit"
+
+print(json.dumps(report))

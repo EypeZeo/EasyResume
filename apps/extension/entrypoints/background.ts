@@ -213,18 +213,26 @@ export default defineBackground(() => {
       pairBusy = false;
     }
   }
-  async function activeJobTab(request: NavigationRequest = {}, selection = false) {
+  async function activeJobTab(
+    request: NavigationRequest = {},
+    selection = false,
+    allowNetworkRecovery = false,
+  ) {
     if (navigationBusy) throw new Error('正在定位招聘页面，请稍候');
     navigationBusy = true;
     const navigation: NavigationLifetime = { deadline: Date.now() + 12000, cancelled: false };
     try {
-      return await bounded(resolveJobTab(request, selection, navigation), 12000, () => {
-        navigation.cancelled = true;
-        return new PageReadError(
-          `${navigation.message || '招聘页面定位'}。等待页面超时，请检查后重试；不会重复跳转`,
-          navigation.diagnostics,
-        );
-      });
+      return await bounded(
+        resolveJobTab(request, selection, navigation, allowNetworkRecovery),
+        12000,
+        () => {
+          navigation.cancelled = true;
+          return new PageReadError(
+            `${navigation.message || '招聘页面定位'}。等待页面超时，请检查后重试；不会重复跳转`,
+            navigation.diagnostics,
+          );
+        },
+      );
     } finally {
       navigation.cancelled = true;
       navigationBusy = false;
@@ -234,6 +242,7 @@ export default defineBackground(() => {
     request: NavigationRequest,
     selection: boolean,
     navigation: NavigationLifetime,
+    allowNetworkRecovery = false,
   ) {
     const checkNavigation = () => {
       if (navigation.cancelled || Date.now() >= navigation.deadline)
@@ -411,12 +420,25 @@ export default defineBackground(() => {
         throw new Error('招聘页面的平台已变化，请重新选择');
       const supported = page.page?.kind === 'list' || page.page?.kind === 'detail';
       if (
+        allowNetworkRecovery &&
+        request.purpose === 'batch' &&
+        page.page.kind === 'list' &&
+        page.code === 'PAGE_NETWORK_ERROR' &&
+        page.safeForRefresh === true &&
+        typeof page.documentId === 'string'
+      )
+        return { ...live, id: target.id!, initialNetworkFailure: page };
+      if (
         supported &&
         (request.purpose === 'batch'
           ? page.page.kind === 'list' && page.listCount > 0
           : selection || page.canRead)
       )
-        return { ...live, id: target.id! };
+        return {
+          ...live,
+          id: target.id!,
+          initialNetworkFailure: undefined as RecruitingPageStatus | undefined,
+        };
       lastMessage =
         page.message ??
         (page.page?.kind === 'home' ? '招聘网站返回了首页' : '职位详情尚未加载完成');
@@ -521,6 +543,7 @@ export default defineBackground(() => {
     frozen: BatchSnapshot,
     epoch: number,
     connectionGeneration: number,
+    initialNetworkFailure = false,
   ): Promise<boolean> {
     if (!task.autoRefresh || task.refreshes || epoch !== batchEpoch) return false;
     const oldTaskId = task.taskId;
@@ -529,16 +552,17 @@ export default defineBackground(() => {
       key: target.key,
       id: target.platform_job_id,
     }));
+    const rescan = initialNetworkFailure || queue.some((target) => !target.id);
     if (
       !scope ||
       !oldTaskId ||
       !task.tabId ||
       task.windowId === undefined ||
-      !queue.length ||
-      queue.some((target) => !target.id) ||
-      new Set(queue.map((target) => target.id)).size !== queue.length
+      (!queue.length && !initialNetworkFailure) ||
+      (!rescan && new Set(queue.map((target) => target.id)).size !== queue.length) ||
+      (initialNetworkFailure && (queue.length > 0 || task.visited > 0))
     )
-      throw new Error('本页缺少可跨刷新核对的职位标识，已暂停；请检查后重新开始');
+      throw new Error('原批量检查点无法安全核对，已暂停；请检查后重新开始');
     const tabId = task.tabId;
     const recoveryEpoch = ++batchEpoch;
     task = { ...task, status: 'recovering', message: '正在安全刷新并核对原职位列表' };
@@ -568,7 +592,7 @@ export default defineBackground(() => {
       await check();
       const stopped = await command(tabId, { type: 'BATCH_STOP', taskId: oldTaskId });
       if (
-        stopped.stopped !== true ||
+        (stopped.stopped !== true && !(initialNetworkFailure && stopped.stopped === false)) ||
         stopped.settled !== true ||
         stopped.taskId !== oldTaskId ||
         stopped.documentId !== frozen.documentId
@@ -603,35 +627,59 @@ export default defineBackground(() => {
       const newTaskId = crypto.randomUUID();
       await check();
       assertRecoveryAlive();
-      task = { ...task, taskId: newTaskId };
+      task = {
+        ...task,
+        taskId: newTaskId,
+        message: '网页已刷新，正在等待网站加载，最长45秒',
+      };
       await persist();
-      const deadline = Date.now() + 15000;
-      for (let attempt = 0; attempt < 30 && Date.now() < deadline; attempt++) {
-        await new Promise((resolve) => setTimeout(resolve, 500));
-        await check();
+      const deadline = Date.now() + 45000;
+      const loadingTimeout = () => new Error('刷新后等待职位列表超时（45秒），已暂停');
+      const remainingLoadingTime = () => Math.max(1, deadline - Date.now());
+      for (let attempt = 0; attempt < 90 && Date.now() < deadline; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, Math.min(500, remainingLoadingTime())));
+        await bounded(check(), remainingLoadingTime(), loadingTimeout);
+        if (Date.now() >= deadline) break;
         let page;
         try {
-          page = await command(tabId, { type: 'PAGE_STATUS' });
+          page = await command(
+            tabId,
+            { type: 'PAGE_STATUS' },
+            Math.min(2000, remainingLoadingTime()),
+          );
         } catch {
           continue;
         }
         assertRecoveryAlive();
+        if (Date.now() >= deadline) break;
         if (typeof page.documentId !== 'string' || page.documentId === frozen.documentId) continue;
         if (page.page?.platform !== scope.platform || page.page?.kind !== 'list')
           throw new Error('刷新后未返回安全的原职位列表，已暂停');
+        if (page.code === 'PAGE_NETWORK_ERROR')
+          throw new Error('刷新后网站仍报告网络错误，已暂停；不会连续刷新');
         if (page.listCount === 0) continue;
-        if (page.safeForRefresh !== true) throw new Error('刷新后未返回安全的原职位列表，已暂停');
-        const value: BatchSnapshot = await command(tabId, {
-          type: 'BATCH_PREPARE',
-          taskId: newTaskId,
-          options: { maxItems: task.maxJobs, maxPages: 5, allowNextPage: task.autoPage },
-        });
+        // Preparation performs the authoritative safety check and may dismiss the
+        // one recognized onboarding guide. Rejecting the read-only status here
+        // would prevent that existing guarded path; recheck safety after preparing.
+        const value: BatchSnapshot = await command(
+          tabId,
+          {
+            type: 'BATCH_PREPARE',
+            taskId: newTaskId,
+            options: {
+              maxItems: Math.max(1, task.maxJobs - task.visited),
+              maxPages: rescan ? Math.max(1, task.maxPages - task.pages + 1) : 5,
+              allowNextPage: task.autoPage,
+            },
+          },
+          Math.min(5000, remainingLoadingTime()),
+        );
         if (typeof value.documentId !== 'string' || value.documentId === frozen.documentId)
           continue;
         fresh = value;
         break;
       }
-      if (!fresh) throw new Error('刷新后等待职位列表超时，已暂停');
+      if (!fresh) throw loadingTimeout();
       let restored: BatchSnapshot = fresh;
       await check();
       const matchesPrefix = (value: BatchSnapshot) =>
@@ -643,7 +691,7 @@ export default defineBackground(() => {
           (target, index) =>
             target.key === queue[index].key && target.platform_job_id === queue[index].id,
         );
-      for (let attempt = 0; restored.targets.length < queue.length; attempt++) {
+      for (let attempt = 0; !rescan && restored.targets.length < queue.length; attempt++) {
         await check();
         if (
           !matchesPrefix(restored) ||
@@ -664,7 +712,13 @@ export default defineBackground(() => {
         if (restored.documentId !== priorDocument || restored.targets.length <= priorLength)
           throw new Error('未能恢复原已加载列表，已暂停');
       }
-      if (!matchesPrefix(restored) || restored.targets.length !== queue.length)
+      if (
+        restored.taskId !== newTaskId ||
+        restored.href !== scope.href ||
+        !restored.targets.length ||
+        (rescan && restored.pageNumber !== 1) ||
+        (!rescan && (!matchesPrefix(restored) || restored.targets.length !== queue.length))
+      )
         throw new Error('刷新后职位列表已变化，已暂停；不会猜测或跳过岗位');
       await check();
       const after = await command(tabId, { type: 'PAGE_STATUS' });
@@ -672,13 +726,18 @@ export default defineBackground(() => {
         throw new Error('刷新后的页面状态已变化，已暂停');
       await check();
       assertRecoveryAlive();
-      const pageOffset = task.pages - restored.pageNumber;
+      const pageOffset = rescan ? task.pages - 1 : task.pages - restored.pageNumber;
       task = {
         ...task,
         status: 'running',
         taskId: newTaskId,
         documentId: restored.documentId,
-        message: '原职位列表核对一致，正在继续读取',
+        // DOM-only keys belong to the previous document. Recheck every fresh card;
+        // only the backend's verified observation identity can identify a duplicate.
+        seen: rescan ? [] : task.seen,
+        message: rescan
+          ? '网页已恢复，从当前列表首条重新核对；重复项计入读取上限，相同记录自动去重'
+          : '原职位列表核对一致，正在继续读取',
       };
       await persist();
       await runBatch(restored, recoveryEpoch, connectionGeneration, pageOffset);
@@ -791,7 +850,7 @@ export default defineBackground(() => {
         try {
           if (
             error instanceof PageReadError &&
-            error.code === 'DETAIL_LOAD_TIMEOUT' &&
+            ['DETAIL_LOAD_TIMEOUT', 'PAGE_NETWORK_ERROR'].includes(error.code ?? '') &&
             (await recoverBatch(snapshot, epoch, connectionGeneration))
           )
             return;
@@ -824,12 +883,11 @@ export default defineBackground(() => {
           classifyRecruitingPage(original.url).platform !== task.scope.platform
         )
           throw new Error('职位平台、城市或搜索范围已变化，请停止旧任务后重新开始');
-        if (!task.documentId)
-          throw new Error('此任务缺少原网页标识，请停止旧任务后重新开始');
+        if (!task.documentId) throw new Error('此任务缺少原网页标识，请停止旧任务后重新开始');
       }
       const tab = resume
         ? await activeJobTab({ tabId: task.tabId, purpose: 'batch' })
-        : await activeJobTab({ ...message, purpose: 'batch' });
+        : await activeJobTab({ ...message, purpose: 'batch' }, false, message.autoRefresh === true);
       if (resume && tab.id !== task.tabId) throw new Error('请回到原批量任务的招聘标签页');
       if (resume && (!tab.url || new URL(tab.url).href !== task.scope!.href))
         throw new Error('职位列表范围已变化，请停止旧任务后重新开始');
@@ -852,15 +910,50 @@ export default defineBackground(() => {
         throw new Error('已切换工作台，请停止旧任务后重新开始');
       const taskId = crypto.randomUUID();
       const pageOffset = resume ? Math.max(0, task.pages - 1) : 0;
-      const snapshot: BatchSnapshot = await command(tab.id, {
-        type: 'BATCH_PREPARE',
-        taskId,
-        options: {
-          maxItems: maxJobs,
-          maxPages: resume ? Math.max(1, maxPages - task.pages + 1) : maxPages,
-          allowNextPage: resume ? task.autoPage : message.autoPage === true,
-        },
-      });
+      let initialNetworkFailure = tab.initialNetworkFailure;
+      let snapshot: BatchSnapshot;
+      try {
+        if (initialNetworkFailure)
+          throw new PageReadError('网站列表网络错误', undefined, 'PAGE_NETWORK_ERROR');
+        snapshot = await command(tab.id, {
+          type: 'BATCH_PREPARE',
+          taskId,
+          options: {
+            maxItems: maxJobs,
+            maxPages: resume ? Math.max(1, maxPages - task.pages + 1) : maxPages,
+            allowNextPage: resume ? task.autoPage : message.autoPage === true,
+          },
+        });
+      } catch (error) {
+        if (
+          resume ||
+          message.autoRefresh !== true ||
+          !(error instanceof PageReadError) ||
+          error.code !== 'PAGE_NETWORK_ERROR'
+        )
+          throw error;
+        const page: RecruitingPageStatus =
+          initialNetworkFailure ?? (await command(tab.id, { type: 'PAGE_STATUS' }));
+        if (
+          page.code !== 'PAGE_NETWORK_ERROR' ||
+          page.safeForRefresh !== true ||
+          page.page.kind !== 'list' ||
+          page.page.platform !== classifyRecruitingPage(tab.url).platform ||
+          !page.documentId
+        )
+          throw error;
+        initialNetworkFailure = page;
+        snapshot = {
+          taskId,
+          documentId: page.documentId,
+          href: tab.url!,
+          pageKey: '',
+          pageNumber: 1,
+          completed: 0,
+          targets: [],
+          canNextPage: false,
+        };
+      }
       if (epoch !== batchEpoch || connectionGeneration !== generation)
         throw new Error('批量任务已取消');
       if (resume && snapshot.documentId !== task.documentId)
@@ -889,11 +982,21 @@ export default defineBackground(() => {
         windowId: tab.windowId,
         incognito: !!tab.incognito,
         scope: { platform: scopePage.platform, href: new URL(snapshot.href).href },
-        message: '正在逐条读取右侧详情',
+        message: initialNetworkFailure
+          ? '网站列表加载失败，正在准备安全刷新'
+          : '正在逐条读取右侧详情',
       };
       await persist();
       const started = { ...task };
-      loop = runBatch(snapshot, epoch, generation, pageOffset).finally(() => {
+      loop = (async () => {
+        if (initialNetworkFailure) {
+          try {
+            await recoverBatch(snapshot, epoch, connectionGeneration, true);
+          } catch (error) {
+            if (epoch === batchEpoch) await cancelBatch(errorText(error));
+          }
+        } else await runBatch(snapshot, epoch, connectionGeneration, pageOffset);
+      })().finally(() => {
         loop = undefined;
       });
       return started;

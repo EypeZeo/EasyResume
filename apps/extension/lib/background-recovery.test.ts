@@ -92,7 +92,7 @@ async function run(autoRefresh = true, options = {}) {
   await load();
   const started = await send({ type: 'BATCH_START', maxJobs: 3, autoRefresh, ...options });
   expect(started.status).toBe('running');
-  await vi.advanceTimersByTimeAsync(20000);
+  await vi.advanceTimersByTimeAsync(50000);
   return send({ type: 'BATCH_STATUS' });
 }
 
@@ -199,6 +199,62 @@ describe('bounded automatic batch refresh', () => {
     expect(preparations[0][1].taskId).not.toBe(preparations[1][1].taskId);
     expect(data.lastAutoRefreshAt).toBe(1000000);
   });
+  it('restores the full identified queue even when only one remaining read is allowed', async () => {
+    expect(await run(true, { maxJobs: 2 })).toMatchObject({
+      status: 'completed',
+      visited: 2,
+      saved: 2,
+      refreshes: 1,
+    });
+    const preparations = mocks.sendMessage.mock.calls.filter(
+      (call) => call[1].type === 'BATCH_PREPARE',
+    );
+    expect(preparations[1][1].options.maxItems).toBe(1);
+    expect(
+      vi.mocked(fetch).mock.calls.map((call) => JSON.parse(String(call[1]?.body)).platform_job_id),
+    ).toEqual(['first', 'second']);
+  });
+  it('allows guarded preparation to clear a recognized guide after reloading', async () => {
+    const original = mocks.sendMessage.getMockImplementation()!;
+    let guideCleared = false;
+    mocks.sendMessage.mockImplementation(async (id, message) => {
+      const result = await original(id, message);
+      if (reloaded && message.type === 'PAGE_STATUS' && !guideCleared)
+        return { ...result, safeForRefresh: false, message: '页面指引或遮罩阻挡了职位操作' };
+      if (reloaded && message.type === 'BATCH_PREPARE') guideCleared = true;
+      return result;
+    });
+    expect(await run()).toMatchObject({ status: 'completed', saved: 2, refreshes: 1 });
+    expect(guideCleared).toBe(true);
+  });
+  it.each(['未知遮罩', '安全验证'])(
+    'pauses when guarded preparation rejects %s after reloading',
+    async (reason) => {
+      const original = mocks.sendMessage.getMockImplementation()!;
+      mocks.sendMessage.mockImplementation(async (id, message) => {
+        const result = await original(id, message);
+        if (reloaded && message.type === 'PAGE_STATUS')
+          return { ...result, safeForRefresh: false, message: reason };
+        if (reloaded && message.type === 'BATCH_PREPARE') return { error: reason };
+        return result;
+      });
+      const result = await run();
+      expect(result).toMatchObject({ status: 'paused', saved: 1, refreshes: 1 });
+      expect(result.message).toContain(reason);
+      expect(fetch).toHaveBeenCalledTimes(1);
+    },
+  );
+  it('still requires a safe page after preparation reports success', async () => {
+    const original = mocks.sendMessage.getMockImplementation()!;
+    mocks.sendMessage.mockImplementation(async (id, message) => {
+      const result = await original(id, message);
+      return reloaded && message.type === 'PAGE_STATUS'
+        ? { ...result, safeForRefresh: false }
+        : result;
+    });
+    expect(await run()).toMatchObject({ status: 'paused', saved: 1, refreshes: 1 });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
   it('does not refresh without explicit opt-in', async () => {
     expect(await run(false)).toMatchObject({ status: 'paused', visited: 1 });
     expect(mocks.reload).not.toHaveBeenCalled();
@@ -213,10 +269,204 @@ describe('bounded automatic batch refresh', () => {
     expect(await run()).toMatchObject({ status: 'paused', visited: 0 });
     expect(mocks.reload).not.toHaveBeenCalled();
   });
-  it('refuses cross-document continuation without stable public IDs', async () => {
+  it('rechecks a fresh list from the beginning without reusing anonymous card keys', async () => {
     withIds = false;
-    expect((await run()).message).toContain('缺少可跨刷新核对');
+    vi.mocked(fetch).mockImplementation(async (_input, init) => {
+      const value = JSON.parse(String(init?.body));
+      return new Response(
+        reloaded && value.platform_job_id === 'first'
+          ? '{"duplicate":true}'
+          : '{"status":"awaiting_review"}',
+      );
+    });
+    expect(await run()).toMatchObject({
+      status: 'completed',
+      refreshes: 1,
+      visited: 3,
+      saved: 2,
+      duplicates: 1,
+      maxJobs: 3,
+    });
+    expect(mocks.reload).toHaveBeenCalledTimes(1);
+    expect(
+      vi.mocked(fetch).mock.calls.map((call) => JSON.parse(String(call[1]?.body)).platform_job_id),
+    ).toEqual(['first', 'first', 'second']);
+    const preparations = mocks.sendMessage.mock.calls.filter(
+      (call) => call[1].type === 'BATCH_PREPARE',
+    );
+    expect(preparations[1][1].options.maxItems).toBe(2);
+  });
+  it('can refresh once for an explicit site network error without treating it as the list end', async () => {
+    failureCode = 'PAGE_NETWORK_ERROR';
+    expect(await run()).toMatchObject({
+      status: 'completed',
+      refreshes: 1,
+      visited: 2,
+      saved: 2,
+    });
+    expect(mocks.reload).toHaveBeenCalledTimes(1);
+  });
+  it('does not carry anonymous seen keys onto a reordered fresh list', async () => {
+    withIds = false;
+    freshQueue = [...queue].reverse();
+    expect(await run()).toMatchObject({ status: 'completed', visited: 3, refreshes: 1 });
+    expect(
+      vi.mocked(fetch).mock.calls.map((call) => JSON.parse(String(call[1]?.body)).platform_job_id),
+    ).toEqual(['first', 'second', 'first']);
+  });
+  it('counts repeated reads against the original quantity limit after a fresh scan', async () => {
+    withIds = false;
+    expect(await run(true, { maxJobs: 2 })).toMatchObject({
+      status: 'completed',
+      visited: 2,
+      maxJobs: 2,
+      refreshes: 1,
+    });
+    expect(
+      vi.mocked(fetch).mock.calls.map((call) => JSON.parse(String(call[1]?.body)).platform_job_id),
+    ).toEqual(['first', 'first']);
+  });
+  it('refreshes an explicit initial network error before any batch reader could prepare', async () => {
+    const original = mocks.sendMessage.getMockImplementation()!;
+    mocks.sendMessage.mockImplementation(async (id, message) => {
+      const result = await original(id, message);
+      if (!reloaded && message.type === 'PAGE_STATUS')
+        return { ...result, code: 'PAGE_NETWORK_ERROR', listCount: 0, canRead: false };
+      if (!reloaded && message.type === 'BATCH_STOP') return { ...result, stopped: false };
+      if (!reloaded && message.type === 'BATCH_PREPARE')
+        throw new Error('The initial failed list must not be prepared');
+      return result;
+    });
+    expect(await run()).toMatchObject({
+      status: 'completed',
+      refreshes: 1,
+      visited: 2,
+      saved: 2,
+    });
+    expect(mocks.reload).toHaveBeenCalledTimes(1);
+    expect(
+      mocks.sendMessage.mock.calls.filter((call) => call[1].type === 'BATCH_PREPARE'),
+    ).toHaveLength(1);
+  });
+  it('recovers a network error that appears between locating the list and preparation', async () => {
+    const original = mocks.sendMessage.getMockImplementation()!;
+    let prepareFailed = false;
+    mocks.sendMessage.mockImplementation(async (id, message) => {
+      const result = await original(id, message);
+      if (!reloaded && message.type === 'BATCH_PREPARE') {
+        prepareFailed = true;
+        return { error: '网站列表网络错误', code: 'PAGE_NETWORK_ERROR' };
+      }
+      if (!reloaded && prepareFailed && message.type === 'PAGE_STATUS')
+        return { ...result, code: 'PAGE_NETWORK_ERROR', listCount: 0, canRead: false };
+      if (!reloaded && message.type === 'BATCH_STOP') return { ...result, stopped: false };
+      return result;
+    });
+    expect(await run()).toMatchObject({ status: 'completed', refreshes: 1, visited: 2 });
+  });
+  it('requires the initial failed page to acknowledge that no step is in flight', async () => {
+    const original = mocks.sendMessage.getMockImplementation()!;
+    mocks.sendMessage.mockImplementation(async (id, message) => {
+      const result = await original(id, message);
+      if (!reloaded && message.type === 'PAGE_STATUS')
+        return { ...result, code: 'PAGE_NETWORK_ERROR', listCount: 0 };
+      if (!reloaded && message.type === 'BATCH_STOP')
+        return { ...result, stopped: false, settled: false };
+      return result;
+    });
+    expect(await run()).toMatchObject({ status: 'paused', visited: 0, refreshes: 0 });
     expect(mocks.reload).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it('does not opt in to refreshing an initial network error by default', async () => {
+    const original = mocks.sendMessage.getMockImplementation()!;
+    mocks.sendMessage.mockImplementation(async (id, message) => {
+      const result = await original(id, message);
+      return message.type === 'PAGE_STATUS'
+        ? { ...result, code: 'PAGE_NETWORK_ERROR', listCount: 0, message: '网站网络错误' }
+        : result;
+    });
+    await load();
+    const start = send({ type: 'BATCH_START', maxJobs: 3, autoRefresh: false });
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(await start).toMatchObject({ error: expect.stringContaining('网站网络错误') });
+    expect(mocks.reload).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it('cannot use the initial-only empty-stop exception after already saving a job', async () => {
+    const original = mocks.sendMessage.getMockImplementation()!;
+    mocks.sendMessage.mockImplementation(async (id, message) => {
+      const result = await original(id, message);
+      return message.type === 'BATCH_STOP' ? { ...result, stopped: false } : result;
+    });
+    expect(await run()).toMatchObject({ status: 'paused', visited: 1, refreshes: 0 });
+    expect(mocks.reload).not.toHaveBeenCalled();
+  });
+  it('does not turn an uncertain preparation timeout into an initial network recovery', async () => {
+    const original = mocks.sendMessage.getMockImplementation()!;
+    let releasePreparation: (() => void) | undefined;
+    mocks.sendMessage.mockImplementation(async (id, message) => {
+      const result = await original(id, message);
+      if (message.type === 'BATCH_PREPARE')
+        await new Promise<void>((resolve) => {
+          releasePreparation = resolve;
+        });
+      return result;
+    });
+    await load();
+    const start = send({ type: 'BATCH_START', maxJobs: 3, autoRefresh: true });
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(await start).toMatchObject({ error: expect.stringContaining('响应超时') });
+    releasePreparation!();
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(await send({ type: 'BATCH_STATUS' })).toMatchObject({ status: 'idle', visited: 0 });
+    expect(mocks.reload).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it.each(['BATCH_PAUSE', 'BATCH_STOP', 'DISCONNECT'])(
+    'honors %s during the initial network-error reload wait',
+    async (type) => {
+      const original = mocks.sendMessage.getMockImplementation()!;
+      mocks.sendMessage.mockImplementation(async (id, message) => {
+        const result = await original(id, message);
+        if (!reloaded && message.type === 'PAGE_STATUS')
+          return { ...result, code: 'PAGE_NETWORK_ERROR', listCount: 0 };
+        if (!reloaded && message.type === 'BATCH_STOP') return { ...result, stopped: false };
+        return result;
+      });
+      await load();
+      await send({ type: 'BATCH_START', maxJobs: 3, autoRefresh: true });
+      await vi.advanceTimersByTimeAsync(0);
+      expect((await send({ type: 'BATCH_STATUS' })).status).toBe('recovering');
+      await send({ type });
+      await vi.advanceTimersByTimeAsync(20000);
+      expect(await send({ type: 'BATCH_STATUS' })).toMatchObject({
+        status: type === 'BATCH_PAUSE' ? 'paused' : 'stopped',
+        visited: 0,
+        saved: 0,
+      });
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+  it('keeps the remaining page budget when rechecking anonymous cards after a refresh', async () => {
+    withIds = false;
+    const original = mocks.sendMessage.getMockImplementation()!;
+    mocks.sendMessage.mockImplementation(async (id, message) => {
+      const result = await original(id, message);
+      if (!reloaded && result.targets)
+        return { ...result, pageNumber: 2, canNextPage: true, canLoadMore: true };
+      return result;
+    });
+    expect(await run(true, { autoPage: true, maxPages: 2 })).toMatchObject({
+      status: 'completed',
+      pages: 2,
+      maxPages: 2,
+      visited: 3,
+    });
+    const preparations = mocks.sendMessage.mock.calls.filter(
+      (call) => call[1].type === 'BATCH_PREPARE',
+    );
+    expect(preparations[1][1].options.maxPages).toBe(1);
   });
   it('requires an explicit settled acknowledgement before reloading', async () => {
     settled = false;
@@ -367,6 +617,91 @@ describe('bounded automatic batch refresh', () => {
     });
     expect(await run()).toMatchObject({ status: 'completed', saved: 2 });
     expect(loadingChecks).toBeGreaterThanOrEqual(3);
+  });
+  it('waits for a slow site beyond fifteen seconds without refreshing twice', async () => {
+    const original = mocks.sendMessage.getMockImplementation()!;
+    mocks.sendMessage.mockImplementation(async (id, message) => {
+      const result = await original(id, message);
+      return reloaded && message.type === 'PAGE_STATUS' && Date.now() < 1020000
+        ? { ...result, listCount: 0, safeForRefresh: false }
+        : result;
+    });
+    await load();
+    await send({ type: 'BATCH_START', maxJobs: 3, autoRefresh: true });
+    await vi.advanceTimersByTimeAsync(16000);
+    expect(await send({ type: 'BATCH_STATUS' })).toMatchObject({
+      status: 'recovering',
+      message: expect.stringContaining('最长45秒'),
+      visited: 1,
+      refreshes: 1,
+    });
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(await send({ type: 'BATCH_STATUS' })).toMatchObject({
+      status: 'completed',
+      visited: 2,
+      saved: 2,
+    });
+    expect(mocks.reload).toHaveBeenCalledTimes(1);
+  });
+  it('pauses immediately when the fresh document explicitly reports another network error', async () => {
+    const original = mocks.sendMessage.getMockImplementation()!;
+    mocks.sendMessage.mockImplementation(async (id, message) => {
+      const result = await original(id, message);
+      return reloaded && message.type === 'PAGE_STATUS'
+        ? { ...result, code: 'PAGE_NETWORK_ERROR', listCount: 0 }
+        : result;
+    });
+    await load();
+    await send({ type: 'BATCH_START', maxJobs: 3, autoRefresh: true });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(await send({ type: 'BATCH_STATUS' })).toMatchObject({
+      status: 'paused',
+      message: expect.stringContaining('网站仍报告网络错误'),
+      saved: 1,
+      refreshes: 1,
+    });
+    expect(mocks.reload).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+  it('bounds repeated unresponsive status checks by the forty-five-second total deadline', async () => {
+    const original = mocks.sendMessage.getMockImplementation()!;
+    mocks.sendMessage.mockImplementation(async (id, message) =>
+      reloaded && message.type === 'PAGE_STATUS' ? new Promise(() => {}) : original(id, message),
+    );
+    await load();
+    await send({ type: 'BATCH_START', maxJobs: 3, autoRefresh: true });
+    await vi.advanceTimersByTimeAsync(44999);
+    expect((await send({ type: 'BATCH_STATUS' })).status).toBe('recovering');
+    await vi.advanceTimersByTimeAsync(2);
+    expect(await send({ type: 'BATCH_STATUS' })).toMatchObject({
+      status: 'paused',
+      message: expect.stringContaining('等待职位列表超时'),
+      refreshes: 1,
+      visited: 1,
+    });
+    expect(mocks.reload).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+  it('does not revive a stopped task when a slow website eventually becomes ready', async () => {
+    const original = mocks.sendMessage.getMockImplementation()!;
+    mocks.sendMessage.mockImplementation(async (id, message) => {
+      const result = await original(id, message);
+      return reloaded && message.type === 'PAGE_STATUS' && Date.now() < 1030000
+        ? { ...result, listCount: 0, safeForRefresh: false }
+        : result;
+    });
+    await load();
+    await send({ type: 'BATCH_START', maxJobs: 3, autoRefresh: true });
+    await vi.advanceTimersByTimeAsync(20000);
+    expect((await send({ type: 'BATCH_STATUS' })).status).toBe('recovering');
+    await send({ type: 'BATCH_STOP' });
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(await send({ type: 'BATCH_STATUS' })).toMatchObject({
+      status: 'stopped',
+      visited: 1,
+      saved: 1,
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
   it('reconstructs only an exact original queue prefix without consuming the old page budget twice', async () => {
     freshQueue = [queue[0]];
