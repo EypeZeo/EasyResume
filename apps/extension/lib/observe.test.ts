@@ -24,6 +24,54 @@ describe('local-only pairing URL', () => {
 });
 
 describe('split-pane job identity and text boundaries', () => {
+  it('does not fill a missing right company from a same-title selected card without matching IDs', () => {
+    document.title = '合成智联职位';
+    document.body.innerHTML = `<aside class="job-split-layout__left"><div class="job-list-panel">
+      <article class="job-card"><span class="job-card__title-main">同名系统运维</span><span class="job-card__company-name">合成甲公司</span></article>
+      <article class="job-card job-card--active"><span class="job-card__title-main">同名系统运维</span><span class="job-card__company-name">合成乙公司</span></article>
+    </div></aside><section class="job-detail-modules"><h1 class="job-detail-summary__title-text">同名系统运维</h1><div class="job-description__content">甲公司的旧描述。</div><a href="/jobdetail/OLD_A.htm">查看更多职位信息</a></section>`;
+    const result = observe(document, 'https://www.zhaopin.com/jobs/')[0];
+    expect(result.platform_job_id).toBe('OLD_A');
+    expect(result.company).toBe('');
+  });
+  it('does not invent a right-side ID from the selected one of two same-title same-company cards', () => {
+    document.title = '合成BOSS职位';
+    document.body.innerHTML = `<ul class="job-list-container">
+      <li class="job-card-box"><a class="job-name" href="/job_detail/old.html">同名系统运维</a><span class="company-name">合成甲公司</span></li>
+      <li class="job-card-box active"><a class="job-name" href="/job_detail/new.html">同名系统运维</a><span class="company-name">合成甲公司</span><span class="company-location">郑州·中原区</span></li>
+    </ul><section class="job-detail-box"><h1 class="job-name">同名系统运维</h1><span class="company-name">合成甲公司</span><div class="job-sec-text">旧岗位的描述。</div></section>`;
+    const result = observe(document, 'https://www.zhipin.com/web/geek/jobs')[0];
+    expect(result.platform_job_id).toBe('');
+    expect(result.url).toBe('https://www.zhipin.com/web/geek/jobs');
+    expect(result.city).toBe('');
+  });
+  it.each([
+    { otherCompany: '合成乙公司', expectedId: 'current' },
+    { otherCompany: '', expectedId: '' },
+  ])(
+    'requires independently visible company uniqueness before filling a missing ID: $otherCompany',
+    ({ otherCompany, expectedId }) => {
+      document.title = '合成BOSS职位';
+      document.body.innerHTML = `<ul class="job-list-container">
+      <li class="job-card-box"><a class="job-name" href="/job_detail/other.html">同名系统运维</a><span class="company-name"></span></li>
+      <li class="job-card-box active"><a class="job-name" href="/job_detail/current.html">同名系统运维</a><span class="company-name">合成甲公司</span></li>
+    </ul><section class="job-detail-box"><h1 class="job-name">同名系统运维</h1><span class="company-name">合成甲公司</span><div class="job-sec-text">当前岗位的描述。</div></section>`;
+      document.querySelector('.job-card-box .company-name')!.textContent = otherCompany;
+      expect(observe(document, 'https://www.zhipin.com/web/geek/jobs')[0].platform_job_id).toBe(
+        expectedId,
+      );
+    },
+  );
+  it('keeps company completion for an independently matching public Zhilian job ID', () => {
+    document.title = '合成智联职位';
+    document.body.innerHTML = `<aside class="job-split-layout__left"><div class="job-list-panel">
+      <article class="job-card job-card--active"><a href="/jobdetail/CURRENT.htm"><span class="job-card__title-main">合成系统运维</span></a><span class="job-card__company-name">合成甲公司</span></article>
+    </div></aside><section class="job-detail-modules"><h1 class="job-detail-summary__title-text">合成系统运维</h1><div class="job-description__content">当前岗位的描述。</div><a href="/jobdetail/CURRENT.htm">查看更多职位信息</a></section>`;
+    expect(observe(document, 'https://www.zhaopin.com/jobs/')[0]).toMatchObject({
+      platform_job_id: 'CURRENT',
+      company: '合成甲公司',
+    });
+  });
   it('distinguishes an empty Zhaopin detail response from an unsupported layout', () => {
     document.title = '合成智联职位';
     document.body.innerHTML =
@@ -46,9 +94,14 @@ describe('split-pane job identity and text boundaries', () => {
     document.body.innerHTML = `<li class="job-card-box"><a class="job-name" href="/job_detail/current.html">当前运维职位</a><span class="company-location">郑州·中原区·合成街道</span></li><section class="job-detail-box"><span class="job-name">当前运维职位</span><span class="job-location">上海·浦东新区·合成街道</span><div class="job-sec-text">维护服务器。</div><a href="/job_detail/current.html">查看更多信息</a></section>`;
     expect(observe(document, 'https://www.zhipin.com/web/geek/jobs')[0].city).toBe('上海');
   });
-  it('can use a uniquely selected same-title card and does not infer a city from its surrounding text', () => {
+  it('does not fill a missing city from a selected title alone', () => {
     document.title = '合成职位列表';
     document.body.innerHTML = `<div class="job-card-wrapper active"><span class="job-name">当前运维职位</span><span class="company-location">郑州·中原区·合成街道</span><span>深圳是原文中无关的地点</span></div><section class="job-detail-box"><span class="job-name">当前运维职位</span><div class="job-sec-text">维护服务器。</div></section>`;
+    expect(observe(document, 'https://www.zhipin.com/web/geek/jobs')[0].city).toBe('');
+  });
+  it('can fill a missing city from an independently visible unique title and company match', () => {
+    document.title = '合成职位列表';
+    document.body.innerHTML = `<div class="job-card-wrapper active"><span class="job-name">当前运维职位</span><span class="company-name">合成甲公司</span><span class="company-location">郑州·中原区·合成街道</span><span>深圳是原文中无关的地点</span></div><section class="job-detail-box"><span class="job-name">当前运维职位</span><span class="company-name">合成甲公司</span><div class="job-sec-text">维护服务器。</div></section>`;
     expect(observe(document, 'https://www.zhipin.com/web/geek/jobs')[0].city).toBe('郑州');
     document.querySelector('.company-location')!.setAttribute('hidden', '');
     expect(observe(document, 'https://www.zhipin.com/web/geek/jobs')[0].city).toBe('');

@@ -91,6 +91,12 @@ const SOURCE: Record<string, string> = {
   external: '外部资料',
   self: '用户自行核实',
 };
+const PLATFORM: Record<string, string> = {
+  boss: 'BOSS直聘',
+  zhaopin: '智联招聘',
+  '51job': '前程无忧',
+  manual: '手动导入',
+};
 const DEGREE = ['unknown', 'none', '高中', '中专', '大专', '本科', '硕士', '博士'];
 const REST: Record<string, string> = {
   unknown: '未明确',
@@ -1032,11 +1038,7 @@ export default function App() {
                           </span>
                           {row.data.company || '公司待核对'}
                           <span className="platform-tag">
-                            {row.data.platform === 'boss'
-                              ? 'BOSS'
-                              : row.data.platform === 'manual'
-                                ? '手动导入'
-                                : row.data.platform}
+                            {PLATFORM[row.data.platform] || '其他来源'}
                           </span>
                         </div>
                         <div className="salary-line">

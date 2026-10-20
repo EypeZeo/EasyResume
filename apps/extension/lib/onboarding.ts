@@ -119,6 +119,21 @@ function safeAcknowledgement({ root, acknowledgement }: Guide): boolean {
   );
 }
 
+function acknowledgementIsUnobstructed(element: HTMLElement): boolean {
+  const document = element.ownerDocument;
+  const view = document.defaultView;
+  if (!view) return false;
+  const rect = element.getBoundingClientRect();
+  const left = Math.max(0, rect.left);
+  const right = Math.min(view.innerWidth, rect.right);
+  const top = Math.max(0, rect.top);
+  const bottom = Math.min(view.innerHeight, rect.bottom);
+  if (right <= left || bottom <= top) return false;
+  const hit = document.elementFromPoint((left + right) / 2, (top + bottom) / 2);
+  // HTMLElement.click() skips hit testing, so never click through another modal or mask.
+  return !!hit && (hit === element || element.contains(hit));
+}
+
 function supported(href: string): boolean {
   try {
     const url = new URL(href);
@@ -172,7 +187,8 @@ export function createOnboardingGuard(document: Document, href: string) {
         latest[0].root !== guide.root ||
         latest[0].acknowledgement !== guide.acknowledgement ||
         !visible(guide.acknowledgement) ||
-        !safeAcknowledgement(guide)
+        !safeAcknowledgement(guide) ||
+        !acknowledgementIsUnobstructed(guide.acknowledgement)
       )
         throw new OnboardingBlocked();
       attemptedDocuments.add(document);

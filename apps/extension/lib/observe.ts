@@ -409,7 +409,8 @@ function detailObservation(
       if (!jobId(target) && link) target = link;
       if (!company) company = bossCompany(scope, url);
     }
-  // A selected card can supply its company/link only after title identity is checked.
+  // Fill a missing company only from an independently matching public ID. Selection
+  // changes before detail responses; title alone must not turn an old detail into the new card.
   const targets = listTargets(document, url.href);
   const matched = jobId(target)
     ? targets.filter(
@@ -437,9 +438,19 @@ function detailObservation(
   )
     throw new Error('左侧已切换职位，右侧详情仍在加载，请稍后重试');
   if (selected.length === 1 && selected[0].title.replace(/\s/g, '') === title.replace(/\s/g, '')) {
-    verifiedTarget ??= selected[0];
-    if (!company) company = selected[0].company;
-    if (!jobId(target) && selected[0].platform_job_id) target = new URL(selected[0].key);
+    const sameCompany = (value: string) => value.replace(/\s/g, '') === company.replace(/\s/g, '');
+    const companyPeers = targets.filter(
+      (card) =>
+        card.title.replace(/\s/g, '') === title.replace(/\s/g, '') &&
+        (!card.company || sameCompany(card.company)),
+    );
+    // Both title and company must already be visible in that detail. Missing-company
+    // peers remain ambiguous; selection alone cannot supply an ID or a missing city.
+    if (company && sameCompany(selected[0].company) && companyPeers.length === 1) {
+      verifiedTarget ??= selected[0];
+      // An existing right-side ID is never replaced by the selected card's ID.
+      if (!jobId(target) && selected[0].platform_job_id) target = new URL(selected[0].key);
+    }
   }
   const salary = text(root, isBoss ? '.salary,.job-salary' : '.job-detail-summary__salary');
   const renderedSalary = /[\uE000-\uF8FF]/.test(salary) ? '薪资采用特殊字体，待核对' : salary;

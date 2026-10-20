@@ -285,22 +285,22 @@ export default function BrowserCollector({ onSaved }: { onSaved: () => Promise<u
             onChange={(e) => setMaxJobs(Number(e.target.value))}
           />
         </label>
-        <label>
+        <label className="check-line">
           <input
             type="checkbox"
             checked={autoPage}
             disabled={busy || running || paused}
             onChange={(e) => setAutoPage(e.target.checked)}
-          />{' '}
+          />
           自动翻页或加载下一批（最多2页）
         </label>
-        <label>
+        <label className="check-line">
           <input
             type="checkbox"
             checked={autoRefresh}
             disabled={busy || running || paused}
             onChange={(e) => setAutoRefresh(e.target.checked)}
-          />{' '}
+          />
           加载失败时自动刷新一次并恢复
         </label>
         <p className="helper">仅在原岗位和列表可重新核对时恢复；否则暂停。</p>

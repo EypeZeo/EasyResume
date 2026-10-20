@@ -6,7 +6,7 @@ import {
   type BatchAdapter,
   type BatchSnapshot,
 } from './batch';
-import { listExhausted, loadMoreTarget, observe, type Observation } from './observe';
+import { listExhausted, listTargets, loadMoreTarget, observe, type Observation } from './observe';
 
 const url = 'https://www.zhipin.com/web/geek/job-recommend';
 let href = url;
@@ -252,6 +252,56 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe('bounded readonly batch steps on synthetic DOM', () => {
+  it('never completes a late same-title detail by borrowing the newly selected company', async () => {
+    href = 'https://www.zhaopin.com/jobs/';
+    document.title = '合成智联职位';
+    document.body.innerHTML = `<aside class="job-split-layout__left"><div class="job-list-panel">
+      <article class="job-card job-card--active"><span class="job-card__title-main">同名系统运维</span><span class="job-card__company-name">合成甲公司</span></article>
+      <article class="job-card"><span class="job-card__title-main">同名系统运维</span><span class="job-card__company-name">合成乙公司</span></article>
+    </div></aside><section class="job-detail-modules"><h1 class="job-detail-summary__title-text">同名系统运维</h1><div class="job-description__content">甲公司的旧描述，不能记入乙公司。</div><a href="/jobdetail/OLD_A.htm">查看更多职位信息</a></section>`;
+    const cards = Array.from(document.querySelectorAll<HTMLElement>('.job-card'));
+    cards[1].addEventListener('click', () => {
+      cards[0].classList.remove('job-card--active');
+      cards[1].classList.add('job-card--active');
+      // The selected row changes immediately; its request never populates the right pane.
+    });
+    const reader = createBatchReader(document, () => href, {
+      observe,
+      listTargets,
+      nextPageTarget: () => undefined,
+    });
+    const snapshot = reader.prepare('missing_right_company');
+    const pending = reader.step(job(snapshot, snapshot.targets[1].key)).then(
+      (result) => result,
+      (error: unknown) => error,
+    );
+    await vi.advanceTimersByTimeAsync(15000);
+    expect(await pending).toBeInstanceOf(Error);
+  });
+  it('never completes a same-title same-company stale detail by borrowing the selected card ID', async () => {
+    document.title = '合成BOSS职位';
+    document.body.innerHTML = `<ul class="job-list-container">
+      <li class="job-card-box active"><a class="job-name" href="/job_detail/old.html">同名系统运维</a><span class="company-name">合成甲公司</span></li>
+      <li class="job-card-box"><a class="job-name" href="/job_detail/new.html">同名系统运维</a><span class="company-name">合成甲公司</span></li>
+    </ul><section class="job-detail-box"><h1 class="job-name">同名系统运维</h1><span class="company-name">合成甲公司</span><div class="job-sec-text">旧岗位的描述，不能记入新岗位。</div></section>`;
+    const cards = Array.from(document.querySelectorAll<HTMLElement>('.job-card-box'));
+    cards[1].addEventListener('click', () => {
+      cards[0].classList.remove('active');
+      cards[1].classList.add('active');
+    });
+    const reader = createBatchReader(document, () => href, {
+      observe,
+      listTargets,
+      nextPageTarget: () => undefined,
+    });
+    const snapshot = reader.prepare('missing_right_id');
+    const pending = reader.step(job(snapshot, snapshot.targets[1].key)).then(
+      (result) => result,
+      (error: unknown) => error,
+    );
+    await vi.advanceTimersByTimeAsync(15000);
+    expect(await pending).toBeInstanceOf(Error);
+  });
   it('reads an already open exact job ID without clicking an unmarked card again', async () => {
     const test = fixture();
     const root = document.querySelector('#detail')!;

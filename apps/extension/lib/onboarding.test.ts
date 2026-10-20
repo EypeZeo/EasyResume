@@ -41,6 +41,9 @@ beforeEach(async () => {
     if (/mask|overlay/.test(this.className)) return rect(window.innerWidth, window.innerHeight);
     return this.id === 'guide' ? rect(500, 80, 50, 50) : rect(80, 30, 60, 60);
   });
+  vi.spyOn(document, 'elementFromPoint').mockImplementation(
+    () => document.querySelector('#guide button, #guide [role="button"], #guide a'),
+  );
 });
 
 afterEach(() => {
@@ -80,6 +83,23 @@ describe('known Zhilian onboarding acknowledgement', () => {
     expect(document.querySelector('#guide')).toBeNull();
   });
 
+  it('accepts an unobstructed text child within the acknowledgement', async () => {
+    const page = fixture();
+    vi.mocked(document.elementFromPoint).mockReturnValue(page.button.querySelector('span'));
+    const click = vi.fn(page.remove);
+    page.button.addEventListener('click', click);
+    await createOnboardingGuard(document, href).clear(() => undefined);
+    expect(click).toHaveBeenCalledTimes(1);
+  });
+
+  it('checks a point within the visible portion of a partially clipped acknowledgement', async () => {
+    const page = fixture();
+    vi.spyOn(page.button, 'getBoundingClientRect').mockReturnValue(rect(80, 30, -20, 60));
+    page.button.addEventListener('click', page.remove);
+    await createOnboardingGuard(document, href).clear(() => undefined);
+    expect(document.elementFromPoint).toHaveBeenCalledWith(30, 75);
+  });
+
   it('does not retry after a guide reappears, including a newly created guard', async () => {
     const page = fixture();
     page.button.addEventListener('click', page.remove);
@@ -95,6 +115,36 @@ describe('known Zhilian onboarding acknowledgement', () => {
 });
 
 describe('conservative blocking', () => {
+  it('does not click a known acknowledgement through another overlay', async () => {
+    const page = fixture();
+    const other = document.createElement('div');
+    other.setAttribute('role', 'dialog');
+    other.textContent = '需要用户处理的其他弹窗';
+    document.body.append(other);
+    vi.mocked(document.elementFromPoint).mockReturnValue(other);
+    const click = vi.fn(() => page.guide.remove());
+    page.button.addEventListener('click', click);
+    const pending = expect(
+      createOnboardingGuard(document, href).clear(() => undefined),
+    ).rejects.toThrow(OnboardingBlocked);
+    await vi.advanceTimersByTimeAsync(1000);
+    await pending;
+    expect(click).not.toHaveBeenCalled();
+  });
+
+  it('does not consume its one attempt when the acknowledgement has no visible hit target', async () => {
+    const page = fixture();
+    vi.mocked(document.elementFromPoint).mockReturnValue(null);
+    const click = vi.fn(page.remove);
+    page.button.addEventListener('click', click);
+    const guard = createOnboardingGuard(document, href);
+    await expect(guard.clear(() => undefined)).rejects.toThrow(OnboardingBlocked);
+    expect(click).not.toHaveBeenCalled();
+    vi.mocked(document.elementFromPoint).mockReturnValue(page.button);
+    await guard.clear(() => undefined);
+    expect(click).toHaveBeenCalledTimes(1);
+  });
+
   it('does not click an unrelated acknowledgement with the same name', async () => {
     const page = fixture();
     page.guide.querySelector('span')!.textContent = '其他功能的操作确认';
