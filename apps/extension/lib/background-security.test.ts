@@ -94,6 +94,67 @@ afterEach(() => {
 
 describe('background connection and cancellation boundary', () => {
   it.each([
+    ['BATCH_PAUSE', 'paused', false],
+    ['BATCH_STOP', 'stopped', false],
+    ['BATCH_PAUSE', 'paused', true],
+    ['BATCH_STOP', 'stopped', true],
+  ])(
+    'preserves %s as %s while checking the active tab (already saved: %s)',
+    async (action, expectedStatus, alreadySaved) => {
+      const enteredQuery = deferred<void>();
+      const delayedQuery = deferred<any[]>();
+      const tab = { id: 4, url: 'https://www.zhipin.com/web/geek/jobs' };
+      const snapshot = {
+        documentId: 'synthetic-document',
+        href: tab.url,
+        pageKey: 'page-one',
+        pageNumber: 1,
+        completed: 0,
+        targets: [{ key: 'first', title: '合成岗位' }],
+        canNextPage: false,
+      };
+      let activeQueries = 0;
+      mocks.query.mockImplementation(async (query) => {
+        if (query.active && ++activeQueries === (alreadySaved ? 3 : 2)) {
+          enteredQuery.resolve();
+          return delayedQuery.promise;
+        }
+        return query.url ? [] : [tab];
+      });
+      mocks.sendMessage.mockImplementation(async (_tab, message) => {
+        if (message.type === 'PAGE_STATUS')
+          return { page: { platform: 'boss', kind: 'list' }, entries: [], canRead: true, listCount: 1 };
+        if (message.type === 'BATCH_PREPARE') return { ...snapshot, taskId: message.taskId };
+        if (message.type === 'BATCH_STEP')
+          return {
+            ...snapshot,
+            taskId: message.taskId,
+            observation: {
+              url: 'https://www.zhipin.com/job_detail/synthetic.html',
+              title: '合成岗位',
+            },
+          };
+        return { stopped: true };
+      });
+      vi.mocked(fetch).mockImplementation(async () => new Response('{"status":"awaiting_review"}'));
+      await load();
+      expect((await send({ type: 'BATCH_START', maxJobs: 1 })).status).toBe('running');
+      await enteredQuery.promise;
+      expect((await send({ type: action })).status).toBe(expectedStatus);
+      delayedQuery.resolve([tab]);
+      await settle();
+      expect(await send({ type: 'BATCH_STATUS' })).toMatchObject({
+        status: expectedStatus,
+        visited: alreadySaved ? 1 : 0,
+      });
+      expect(
+        mocks.sendMessage.mock.calls.filter((call) => call[1].type === 'BATCH_STEP'),
+      ).toHaveLength(alreadySaved ? 1 : 0);
+      expect(fetch).toHaveBeenCalledTimes(alreadySaved ? 1 : 0);
+    },
+  );
+
+  it.each([
     [{ status: 'awaiting_review' }, { saved: 1, duplicates: 0, pendingReview: 0, unconfirmed: 0 }],
     [{ status: 'repeat' }, { saved: 0, duplicates: 1, pendingReview: 0, unconfirmed: 0 }],
     [{ duplicate: true }, { saved: 0, duplicates: 1, pendingReview: 0, unconfirmed: 0 }],

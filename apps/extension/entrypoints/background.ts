@@ -697,6 +697,7 @@ export default defineBackground(() => {
     try {
       while (task.status === 'running' && epoch === batchEpoch) {
         const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+        if (epoch !== batchEpoch || task.status !== 'running') return;
         if (tabs[0]?.id !== task.tabId) throw new Error('招聘页面已切到后台，请回到原页面后继续');
         const target = snapshot.targets.find((t) => !task.seen.includes(t.key));
         if (
