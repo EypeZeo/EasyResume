@@ -1,5 +1,7 @@
 const MESSAGE = '点击消息，可以直接跟招聘方聊天啦~';
 const ACKNOWLEDGEMENT = '我知道了';
+const IMAGE_GUIDE =
+  'https://fecdn5.zhaopin.cn/i_zhaopin_com/assets/im-message-entry-guide.ccccf8d1acee1a02cc42ba22fdaeb1e6.png';
 const attemptedDocuments = new WeakSet<Document>();
 const clearingDocuments = new WeakSet<Document>();
 const compact = (value: string | null) => (value ?? '').replace(/\s+/g, '').replace(/～/g, '~');
@@ -66,10 +68,18 @@ function overlays(document: Document): Element[] {
   });
 }
 
-type Guide = { root: HTMLElement; acknowledgement: HTMLElement };
+type Guide = { root: HTMLElement; acknowledgement: HTMLElement; image?: true };
 
 function guides(document: Document): Guide[] {
   const result: Guide[] = [];
+  for (const root of document.querySelectorAll<HTMLElement>('.im-message-entry-guide')) {
+    // The observed container is 0x0; its fixed mask and image have visible rectangles.
+    for (const image of root.querySelectorAll<HTMLImageElement>(
+      ':scope > img.im-message-entry-guide__img',
+    )) {
+      if (visible(image)) result.push({ root, acknowledgement: image, image: true });
+    }
+  }
   for (const leaf of document.querySelectorAll<HTMLElement>('body *')) {
     if (leaf.childElementCount || compact(leaf.textContent) !== ACKNOWLEDGEMENT || !visible(leaf))
       continue;
@@ -98,7 +108,52 @@ function guides(document: Document): Guide[] {
   return result;
 }
 
-function safeAcknowledgement({ root, acknowledgement }: Guide): boolean {
+function safeImageAcknowledgement({ root, acknowledgement }: Guide): boolean {
+  const image = acknowledgement as HTMLImageElement;
+  const mask = root.firstElementChild;
+  const view = root.ownerDocument.defaultView;
+  if (
+    !view ||
+    root.children.length !== 2 ||
+    !mask?.matches('div.im-message-entry-guide__mask') ||
+    mask.childElementCount !== 0 ||
+    root.lastElementChild !== image ||
+    image.tagName !== 'IMG' ||
+    !image.complete ||
+    image.naturalWidth <= 0 ||
+    image.naturalHeight <= 0 ||
+    image.srcset ||
+    image.hasAttribute('usemap') ||
+    image.hasAttribute('ismap') ||
+    compact(root.textContent) !== '' ||
+    root.closest(
+      'a, form, button, [role="button"], summary, [href], [formaction], [contenteditable="true"]',
+    ) ||
+    root.querySelector('a, form, input, button, iframe, [href], [formaction]') ||
+    !overlays(root.ownerDocument).includes(mask)
+  )
+    return false;
+  try {
+    if (
+      new URL(image.getAttribute('src') ?? '', 'https://www.zhaopin.com/').href !== IMAGE_GUIDE ||
+      (image.currentSrc && image.currentSrc !== IMAGE_GUIDE)
+    )
+      return false;
+  } catch {
+    return false;
+  }
+  const bounds = image.getBoundingClientRect();
+  return (
+    visible(image) &&
+    bounds.width <= view.innerWidth &&
+    bounds.height <= view.innerHeight * 0.4 &&
+    bounds.width * bounds.height <= view.innerWidth * view.innerHeight * 0.4
+  );
+}
+
+function safeAcknowledgement(guide: Guide): boolean {
+  if (guide.image) return safeImageAcknowledgement(guide);
+  const { root, acknowledgement } = guide;
   if (
     compact(root.textContent) !== MESSAGE + ACKNOWLEDGEMENT ||
     !root.contains(acknowledgement) ||

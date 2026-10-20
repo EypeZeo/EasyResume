@@ -85,7 +85,7 @@ wheels = [
 
 [[package]]
 name = "easyresume"
-version = "0.2.0b23"
+version = "0.2.0b24"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },

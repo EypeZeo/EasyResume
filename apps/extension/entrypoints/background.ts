@@ -634,7 +634,50 @@ export default defineBackground(() => {
       };
       await persist();
       const deadline = Date.now() + 45000;
-      const loadingTimeout = () => new Error('刷新后等待职位列表超时（45秒），已暂停');
+      const waitLabels = {
+        timeout: '页面响应超时',
+        unavailable: '页面脚本未响应',
+        oldDocument: '仍是刷新前页面',
+        missingDocument: '缺少页面标识',
+        emptyList: '新页面暂无职位',
+      } as const;
+      type WaitReason = keyof typeof waitLabels;
+      const waitCounts: Record<WaitReason, number> = {
+        timeout: 0,
+        unavailable: 0,
+        oldDocument: 0,
+        missingDocument: 0,
+        emptyList: 0,
+      };
+      let lastWaitReason: WaitReason | undefined;
+      let lastWaitUpdate = Date.now();
+      const waitSummary = () =>
+        lastWaitReason
+          ? `最近：${waitLabels[lastWaitReason]}；检查记录：${(
+              Object.keys(waitCounts) as WaitReason[]
+            )
+              .filter((reason) => waitCounts[reason] > 0)
+              .map((reason) => `${waitLabels[reason]}${waitCounts[reason]}次`)
+              .join('、')}`
+          : '尚未收到页面状态';
+      const recordWait = async (reason: WaitReason) => {
+        assertRecoveryAlive();
+        waitCounts[reason] += 1;
+        const changed = lastWaitReason !== reason;
+        lastWaitReason = reason;
+        if (changed || Date.now() - lastWaitUpdate >= 5000) {
+          lastWaitUpdate = Date.now();
+          // Only fixed categories and counts are persisted, never raw page
+          // messages, transport errors, HTML, URLs or diagnostics.
+          task = {
+            ...task,
+            message: `正在等待网站加载，最长45秒；${waitSummary()}`,
+          };
+          await persist();
+        }
+      };
+      const loadingTimeout = () =>
+        new Error(`刷新后等待职位列表超时（45秒），已暂停；${waitSummary()}`);
       const remainingLoadingTime = () => Math.max(1, deadline - Date.now());
       for (let attempt = 0; attempt < 90 && Date.now() < deadline; attempt++) {
         await new Promise((resolve) => setTimeout(resolve, Math.min(500, remainingLoadingTime())));
@@ -647,17 +690,42 @@ export default defineBackground(() => {
             { type: 'PAGE_STATUS' },
             Math.min(2000, remainingLoadingTime()),
           );
-        } catch {
+        } catch (error) {
+          await recordWait(error instanceof PageCommandTimeout ? 'timeout' : 'unavailable');
           continue;
         }
         assertRecoveryAlive();
         if (Date.now() >= deadline) break;
-        if (typeof page.documentId !== 'string' || page.documentId === frozen.documentId) continue;
+        const safetyReason = [
+          '请保持招聘页面在前台',
+          '已离开支持的职位页面，批量读取已暂停',
+          '页面地址已变化，请重新开始批量读取',
+          '检测到验证或异常，请处理后手动重试',
+          '检测到验证或异常，批量读取已暂停；请处理后重新开始',
+          ...(page.listCount === 0
+            ? [
+                '页面指引或遮罩阻挡了职位操作，已暂停；请关闭指引后继续。',
+                '页面指引关闭后遮罩仍未消失，已暂停；请检查页面后继续。',
+              ]
+            : []),
+        ].find((reason) => reason === page.message);
+        if (safetyReason) throw new Error(safetyReason);
+        if (typeof page.documentId !== 'string' || !page.documentId) {
+          await recordWait('missingDocument');
+          continue;
+        }
+        if (page.documentId === frozen.documentId) {
+          await recordWait('oldDocument');
+          continue;
+        }
         if (page.page?.platform !== scope.platform || page.page?.kind !== 'list')
           throw new Error('刷新后未返回安全的原职位列表，已暂停');
         if (page.code === 'PAGE_NETWORK_ERROR')
           throw new Error('刷新后网站仍报告网络错误，已暂停；不会连续刷新');
-        if (page.listCount === 0) continue;
+        if (page.listCount === 0) {
+          await recordWait('emptyList');
+          continue;
+        }
         // Preparation performs the authoritative safety check and may dismiss the
         // one recognized onboarding guide. Rejecting the read-only status here
         // would prevent that existing guarded path; recheck safety after preparing.
@@ -674,8 +742,14 @@ export default defineBackground(() => {
           },
           Math.min(5000, remainingLoadingTime()),
         );
-        if (typeof value.documentId !== 'string' || value.documentId === frozen.documentId)
+        if (typeof value.documentId !== 'string' || !value.documentId) {
+          await recordWait('missingDocument');
           continue;
+        }
+        if (value.documentId === frozen.documentId) {
+          await recordWait('oldDocument');
+          continue;
+        }
         fresh = value;
         break;
       }

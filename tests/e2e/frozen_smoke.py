@@ -37,7 +37,7 @@ def test_workspace():
                 time.sleep(0.2 * (attempt + 1))
 
 
-executable = Path(os.environ.get("EASYRESUME_TEST_EXE", "artifacts/windows/v0.2.0-beta.23/EasyResume/EasyResume.exe")).resolve()
+executable = Path(os.environ.get("EASYRESUME_TEST_EXE", "artifacts/windows/v0.2.0-beta.24/EasyResume/EasyResume.exe")).resolve()
 assert executable.is_file(), "Build the Windows test distribution first"
 with test_workspace() as directory:
     root = Path(directory)

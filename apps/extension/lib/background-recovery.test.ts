@@ -682,6 +682,85 @@ describe('bounded automatic batch refresh', () => {
     expect(mocks.reload).toHaveBeenCalledTimes(1);
     expect(fetch).toHaveBeenCalledTimes(1);
   });
+  it('reports only bounded wait categories and counts without persisting page diagnostics', async () => {
+    const original = mocks.sendMessage.getMockImplementation()!;
+    const secret = 'private-token-should-not-be-saved';
+    let probes = 0;
+    mocks.sendMessage.mockImplementation(async (id, message) => {
+      const result = await original(id, message);
+      if (!reloaded || message.type !== 'PAGE_STATUS') return result;
+      probes += 1;
+      if (probes === 1) throw new Error(`Transport failed: ${secret}`);
+      if (probes === 2) return { ...result, documentId: 'old-document' };
+      if (probes === 3) return { ...result, documentId: undefined };
+      return {
+        ...result,
+        listCount: 0,
+        safeForRefresh: false,
+        message: `https://example.invalid/?token=${secret}`,
+        diagnostics: { html: `<div>${secret}</div>` },
+      };
+    });
+    const result = await run();
+    expect(result).toMatchObject({ status: 'paused', saved: 1, refreshes: 1 });
+    expect(result.message).toContain('最近：新页面暂无职位');
+    expect(result.message).toContain('页面脚本未响应1次');
+    expect(result.message).toContain('仍是刷新前页面1次');
+    expect(result.message).toContain('缺少页面标识1次');
+    expect(result.message).toMatch(/新页面暂无职位\d+次/);
+    const persistedMessages = mocks.sessionSet.mock.calls.map(
+      ([value]) => value.batch?.message ?? '',
+    );
+    expect(
+      persistedMessages.some((value) => value.includes('最长45秒；最近：页面脚本未响应')),
+    ).toBe(true);
+    expect(
+      persistedMessages.filter((value) => value.includes('最长45秒；最近：')).length,
+    ).toBeLessThan(15);
+    expect(JSON.stringify(mocks.sessionSet.mock.calls)).not.toContain(secret);
+    expect(mocks.reload).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+  it('distinguishes repeated status timeouts from an empty fresh list', async () => {
+    const original = mocks.sendMessage.getMockImplementation()!;
+    mocks.sendMessage.mockImplementation(async (id, message) =>
+      reloaded && message.type === 'PAGE_STATUS' ? new Promise(() => {}) : original(id, message),
+    );
+    const result = await run();
+    expect(result).toMatchObject({ status: 'paused', visited: 1 });
+    expect(result.message).toContain('最近：页面响应超时');
+    expect(result.message).toMatch(/页面响应超时\d+次/);
+    expect(result.message).not.toContain('页面脚本未响应');
+    expect(result.message).not.toContain('新页面暂无职位');
+  });
+  it.each([
+    ['请保持招聘页面在前台', '请保持招聘页面在前台'],
+    ['检测到验证或异常，请处理后手动重试', '检测到验证或异常，请处理后手动重试'],
+    ['检测到验证或异常，批量读取已暂停；请处理后重新开始', '检测到验证或异常'],
+    ['页面指引或遮罩阻挡了职位操作，已暂停；请关闭指引后继续。', '页面指引或遮罩阻挡了职位操作'],
+  ])(
+    'preserves the explicit safety reason %s instead of waiting for an empty list',
+    async (message, reason) => {
+      const original = mocks.sendMessage.getMockImplementation()!;
+      mocks.sendMessage.mockImplementation(async (id, request) => {
+        const result = await original(id, request);
+        return reloaded && request.type === 'PAGE_STATUS'
+          ? { ...result, listCount: 0, safeForRefresh: false, message }
+          : result;
+      });
+      await load();
+      await send({ type: 'BATCH_START', maxJobs: 3, autoRefresh: true });
+      await vi.advanceTimersByTimeAsync(1000);
+      const result = await send({ type: 'BATCH_STATUS' });
+      expect(result).toMatchObject({ status: 'paused', visited: 1, saved: 1, refreshes: 1 });
+      expect(result.message).toContain(reason);
+      expect(result.message).not.toContain('等待职位列表超时');
+      expect(
+        mocks.sendMessage.mock.calls.filter(([, request]) => request.type === 'BATCH_PREPARE'),
+      ).toHaveLength(1);
+      expect(fetch).toHaveBeenCalledTimes(1);
+    },
+  );
   it('does not revive a stopped task when a slow website eventually becomes ready', async () => {
     const original = mocks.sendMessage.getMockImplementation()!;
     mocks.sendMessage.mockImplementation(async (id, message) => {

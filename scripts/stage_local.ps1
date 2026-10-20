@@ -1,4 +1,4 @@
-﻿param([ValidatePattern('^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$')][string]$Version = 'v0.2.0-beta.23')
+﻿param([ValidatePattern('^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$')][string]$Version = 'v0.2.0-beta.24')
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $source = Join-Path $projectRoot "artifacts/windows/$Version/EasyResume"
@@ -44,6 +44,8 @@ $instructions = @"
 “加载失败时自动刷新一次并恢复”独立默认关闭，是故障恢复而非定时刷新。明确的列表网络错误或空详情超时可触发一次尝试；每任务最多一次，跨任务至少间隔五分钟。有稳定、唯一的职位编号时严格重建原队列；缺编号则从新文档列表首条重新核对，已保存岗位去重，重复核对也计入原定条数上限。累计页数和刷新额度不重置。验证码、返回首页或不明确遮罩仍会暂停；此功能不重载扩展。本轮真实恢复尚待验收。实际通过范围见 versions/$Version/docs/STATUS.md。
 
 同名同公司的岗位若无法区分，批量会暂停。可在招聘网站点击“查看更多职位信息”，打开独立职位页后再读取。
+
+已适配智联消息提示的图片式新手引导，读取时核对图片来源、遮罩和点击位置后尝试关闭一次；未知弹窗仍暂停。刷新等待会显示具体检查原因，方便区分页面脚本未响应、旧页面和新页面暂无职位。本版实际验收范围仍以随包 STATUS.md 为准。
 "@
 [IO.File]::WriteAllText((Join-Path $localRoot '使用说明.md'), $instructions, [Text.UTF8Encoding]::new($false))
 Get-FileHash -LiteralPath (Join-Path $destination 'EasyResume.exe') -Algorithm SHA256 | Format-List
